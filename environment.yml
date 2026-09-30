@@ -7,6 +7,7 @@ dependencies:
   - ismrmrd::ismrmrd=1.14.2
   - ismrmrd::siemens_to_ismrmrd=1.2.13
   - boost=1.76.0         # For ismrmrd
+  - conda-forge::libxslt>=1.1.33   # older conda-forge build links missing libiconv/ICU 58
   # - libxml2=2.9.12       # For ismrmrd
   # - h5py=3.7.0           # For ismrmrd
   # - matplotlib=3.8.2     # used by rgb.py and provides various visualization tools including colormaps
