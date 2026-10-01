@@ -28,6 +28,11 @@ defaultPtoneTxSide         = 'high'  # side in ptone_tx_frequency()
 defaultPtoneTxDB           = 70      # Transmit gain (dB), as in kstream's prot/aria scripts
 defaultPtoneTxMaxDurationS = 3600    # Safety limit on transmission time, in case the transmitter isn't stopped
 defaultPtoneTxDeviceArgs   = ''      # UHD device arguments (tx_waveforms.py --args).  Empty: UHD searches for any USRP
+
+# Default for the ptonePlot parameter in pilottone.json: plot the results after each scan
+# (<results>.png, made by ptone/ptone_plot.py in a separate process)
+defaultPtonePlot = True
+ptonePlotScript  = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'ptone', 'ptone_plot.py')
 # Python that runs ptone/tx_waveforms.py.  It needs UHD, which can't be installed in this environment
 # (see ptone/environment-tx.yml), so default to the 'ptone-tx' conda environment alongside this one
 defaultPtoneTxPython       = os.path.join(os.path.dirname(sys.prefix), 'ptone-tx', 'bin', 'python')
@@ -170,6 +175,10 @@ def process(connection, config, mrdHeader):
 
     transmitter = None  # USRPTransmitter, once transmission has started
 
+    lastScanCounter = None  # Highest scan_counter of all lines received (analyzed or not), for plotting
+
+    ptonePlot = mrdhelper.get_json_config_param(config, 'ptonePlot', default=defaultPtonePlot, type='bool')
+
     # Settings actually used (config values with defaults filled in), saved with the results
     settings = {
         'gitCommit':      gitCommit,
@@ -223,6 +232,7 @@ def process(connection, config, mrdHeader):
         settings['ptoneTxFreqHz']         = ptoneTxFreqHz  # Updated at the first imaging line
         settings['ptoneTxPython']         = ptoneTxPython
         settings['ptoneTxDeviceArgs']     = ptoneTxDeviceArgs
+        settings['ptonePlot']             = ptonePlot
         settings['ptoneTxMaxDurationS']   = ptoneTxMaxDurationS
         settings['ptoneTxStarted']        = False          # Updated when transmission starts
         settings['ptoneTxExitCode']       = None           # Set if the transmitter stops before the scan ends
@@ -235,6 +245,9 @@ def process(connection, config, mrdHeader):
 
             if not isinstance(item, ismrmrd.Acquisition):
                 continue
+
+            if (lastScanCounter is None) or (item.scan_counter > lastScanCounter):
+                lastScanCounter = item.scan_counter
 
             # Timestamps are 2.5 ms ticks since midnight
             timeMs = item.acquisition_time_stamp * 2.5
@@ -316,14 +329,32 @@ def process(connection, config, mrdHeader):
 
         if numChanMismatch > 0:
             logging.warning("Skipped %d lines with a mismatched channel count", numChanMismatch)
-        save_results(results, outputFilePath, timestamp, config, settings, mrdHeader)
+        npzPath = save_results(results, outputFilePath, timestamp, config, settings, mrdHeader, lastScanCounter)
         connection.send_close()
+
+        plot = ptonePlot and (npzPath is not None)
+        if plot:
+            logging.info("Plot will be saved to %s", os.path.splitext(npzPath)[0] + '.png')
         logging.getLogger().removeHandler(logHandler)
         logHandler.close()
 
-def save_results(results, filePath, timestamp, config, settings, mrdHeader):
+        # Plot in a separate process, so the server can take the next scan straight away.  Its output
+        # goes to this scan's log file, which this process has finished writing to
+        if plot:
+            start_plot(npzPath, logFilePath)
+
+def start_plot(npzPath, logFilePath):
+    # Start ptone/ptone_plot.py on the results file without waiting for it
+    try:
+        with open(logFilePath, 'a') as logFile:
+            subprocess.Popen([sys.executable, ptonePlotScript, npzPath], stdout=logFile, stderr=subprocess.STDOUT)
+    except Exception as e:
+        logging.error("Could not start plotting %s: %s", npzPath, e)
+
+def save_results(results, filePath, timestamp, config, settings, mrdHeader, lastScanCounter=None):
+    # Returns filePath, or None if there was nothing to save
     if len(results) == 0:
-        return
+        return None
 
     outputFolder = os.path.dirname(filePath)
     if (outputFolder != "") and (not os.path.exists(outputFolder)):
@@ -343,5 +374,8 @@ def save_results(results, filePath, timestamp, config, settings, mrdHeader):
              timestamp    = np.array(timestamp),                               # Processing start, YYYYMMDD-HHMMSS-mmm
              config       = np.array(json.dumps(config, indent=4)),            # Config as received, as JSON text
              settings     = np.array(json.dumps(settings, indent=4)),          # Settings actually used, as JSON text
-             mrd_header   = np.array(mrd_header_to_xml(mrdHeader)))            # MRD header, as XML text
+             mrd_header   = np.array(mrd_header_to_xml(mrdHeader)),            # MRD header, as XML text
+             # Highest scan_counter of all lines received, analyzed or not (-1 if unknown)
+             last_scan_counter = np.array(lastScanCounter if lastScanCounter is not None else -1))
     logging.info("Saved pilot tone results for %d lines to %s", len(results), filePath)
+    return filePath

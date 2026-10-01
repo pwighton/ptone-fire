@@ -1,8 +1,8 @@
 {
     "version": "0.0.1",
     "parameters": {
-        "ptoneTx": "true",
-        "ptoneTxDelayMs": "1500",
+        "ptoneTx": "false",
+        "ptoneTxDelayMs": "0",
         "ptoneTxOverrideFreqHz": "",
         "ptoneTxDB": "70",
         "ptoneTxBandPosition": "0.5",
