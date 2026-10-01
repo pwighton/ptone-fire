@@ -51,6 +51,10 @@ def process(connection, config, mrdHeader):
     firstTimeMs  = None
     logging.info("Skipping lines within %g ms of the first line", ptoneTxDelayMs)
 
+    # Reference channel for relative phase and amplitude (phase_ref_chan_idx in fast_phase_avg.py)
+    refChanIdx = mrdhelper.get_json_config_param(config, 'refChanIdx', default=0, type='int')
+    logging.info("Using channel %d as the reference channel", refChanIdx)
+
     # Per-channel midpoint of the phase range, set from the first line after ptoneTxDelayMs.
     # Keeping phases within [midpoint - pi, midpoint + pi] minimizes phase wraps across the scan
     phaseMidpoint = None
@@ -75,7 +79,7 @@ def process(connection, config, mrdHeader):
             if (timeMs - firstTimeMs) % (24*60*60*1000) < ptoneTxDelayMs:
                 continue
 
-            result = analyze_line(item, phaseMidpoint)
+            result = analyze_line(item, refChanIdx, phaseMidpoint)
             results.append(result)
 
             if phaseMidpoint is None:
@@ -86,7 +90,7 @@ def process(connection, config, mrdHeader):
         save_results(results)
         connection.send_close()
 
-def analyze_line(acq, phaseMidpoint=None):
+def analyze_line(acq, refChanIdx=0, phaseMidpoint=None):
     # acq.data is complex64 with shape [channels, readout samples]
 
     param_est, quality = estimate_ptone_params_initial_np_linalg_svd(np.transpose(acq.data))
@@ -94,9 +98,9 @@ def analyze_line(acq, phaseMidpoint=None):
     amplitude = param_est[0,:]
     phase = np.mod(param_est[1,:], 2*np.pi)
     
-    # Phase relative to channel 0, wrapped to [midpoint - pi, midpoint + pi].
+    # Phase relative to the reference channel, wrapped to [midpoint - pi, midpoint + pi].
     # Without a midpoint (first line), wrap to [0, 2pi] as in fast_phase_avg.py
-    phaseDiff = phase - phase[0]
+    phaseDiff = phase - phase[refChanIdx]
     if phaseMidpoint is None:
         relativePhase = np.mod(phaseDiff, 2*np.pi)
     else:
@@ -110,8 +114,8 @@ def analyze_line(acq, phaseMidpoint=None):
         'amplitude':    amplitude,                    # One value per channel
         'phase':        phase,                    # One value per channel (radians)
         'quality':      quality,
-        # Relative to channel 0, removing the per-line scale/phase ambiguity of the SVD estimate
-        'relative_amplitude': amplitude / amplitude[0],
+        # Relative to the reference channel, removing the per-line scale/phase ambiguity of the SVD estimate
+        'relative_amplitude': amplitude / amplitude[refChanIdx],
         'relative_phase':     relativePhase,
     }
 

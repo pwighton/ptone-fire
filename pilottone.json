@@ -1,6 +1,7 @@
 {
     "version": "0.0.1",
     "parameters": {
-        "ptoneTxDelayMs": "0"
+        "ptoneTxDelayMs": "0",
+        "refChanIdx": "0"
     }
 }
