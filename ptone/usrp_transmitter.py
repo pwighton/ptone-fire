@@ -7,7 +7,8 @@ Wraps tx_waveforms.py in a subprocess for non-blocking transmission control.
 Copied from kstream (kstream/usrp_transmitter.py and kstream/tx_waveforms.py at commit 850c2ea).
 Changes from kstream: tx_delay (--tx-delay) defaults to 0, so transmission starts immediately; the Python interpreter that runs tx_waveforms.py is configurable (python),
 since it needs the UHD Python bindings, which the environment running this class may not have; and
-the subprocess output can be written to a file (log_path, unbuffered) instead of being discarded.
+the subprocess output can be written to a file (log_path) instead of being discarded, with each
+line timestamped when it's received.
 
 Rename either `tx_waveforms3.15.py` or `tx_waveforms4.py` to `tx_waveforms.py`
 to switch vesions 
@@ -19,6 +20,8 @@ See:
 
 import os
 import subprocess
+import threading
+from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
@@ -76,9 +79,11 @@ class USRPTransmitter:
             verbose: If True, show subprocess output (default False)
             python: Python interpreter used to run tx_waveforms.py.  It needs the UHD Python
                     bindings (import uhd).  Default "python3", found on the PATH
-            log_path: If set, subprocess output is appended to this file (overrides verbose)
+            log_path: If set, subprocess output is appended to this file, each line prefixed with
+                      the time it was received (overrides verbose)
         """
         self._process: Optional[subprocess.Popen] = None
+        self._log_thread: Optional[threading.Thread] = None
         
         self.script_path = Path(script_path) if script_path else self._DEFAULT_SCRIPT
         if not self.script_path.exists():
@@ -129,25 +134,42 @@ class USRPTransmitter:
             cmd.extend(["--args", self.device_args])
         
         kwargs = {}
-        logFile = None
         if self.log_path is not None:
-            logFile = open(self.log_path, "a")
-            logFile.write(" ".join(cmd) + "\n")
-            logFile.flush()
-            kwargs["stdout"] = logFile
+            # Output is read through a pipe by _copy_output(), which timestamps each line
+            kwargs["stdout"] = subprocess.PIPE
             kwargs["stderr"] = subprocess.STDOUT
-            # Unbuffered, so print() output reaches the log even when the process is stopped by stop()
+            # Unbuffered, so print() output arrives as it's printed, and isn't lost when the
+            # process is stopped by stop()
             kwargs["env"] = dict(os.environ, PYTHONUNBUFFERED="1")
+            self._write_log(" ".join(cmd))
         elif not self.verbose:
             kwargs["stdout"] = subprocess.DEVNULL
             kwargs["stderr"] = subprocess.DEVNULL
         
         try:
             self._process = subprocess.Popen(cmd, **kwargs)
-        finally:
-            # The subprocess has its own copy of the file handle
-            if logFile is not None:
-                logFile.close()
+        except OSError as e:
+            if self.log_path is not None:
+                self._write_log("Failed to start: %s" % e)
+            raise
+
+        if self.log_path is not None:
+            self._log_thread = threading.Thread(target=self._copy_output, args=(self._process,), daemon=True)
+            self._log_thread.start()
+
+    def _write_log(self, line: str) -> None:
+        """Append a line to log_path, prefixed with the current time."""
+        now = datetime.now()
+        timestamp = now.strftime("%Y-%m-%d %H:%M:%S") + ",%03d" % (now.microsecond // 1000)
+        with open(self.log_path, "a") as logFile:
+            logFile.write("%s - %s\n" % (timestamp, line))
+
+    def _copy_output(self, process: subprocess.Popen) -> None:
+        """Copy the subprocess output to log_path, line by line, until it exits."""
+        for line in iter(process.stdout.readline, b""):
+            self._write_log(line.decode(errors="replace").rstrip("\r\n"))
+        process.stdout.close()
+        self._write_log("Exited with code %d" % process.wait())
     
     def stop(self) -> None:
         """Stop any current transmission."""
@@ -159,6 +181,13 @@ class USRPTransmitter:
                 self._process.kill()
                 self._process.wait()
             self._process = None
+        self._join_log_thread()
+
+    def _join_log_thread(self) -> None:
+        """Wait for _copy_output() to finish writing the log after the subprocess has exited."""
+        if self._log_thread is not None:
+            self._log_thread.join(timeout=5.0)
+            self._log_thread = None
     
     def wait(self, timeout: Optional[float] = None) -> int:
         """
@@ -172,7 +201,9 @@ class USRPTransmitter:
         """
         if self._process is None:
             return -1
-        return self._process.wait(timeout=timeout)
+        returnCode = self._process.wait(timeout=timeout)
+        self._join_log_thread()
+        return returnCode
     
     def is_transmitting(self) -> bool:
         """Check if currently transmitting."""

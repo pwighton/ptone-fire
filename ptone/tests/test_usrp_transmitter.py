@@ -166,3 +166,38 @@ def test_tx_waveforms_start_time(txDelay, expected):
     result = subprocess.run([txPython, '-c', code], capture_output=True, text=True, timeout=60)
     assert result.returncode == 0, result.stderr
     assert expected in result.stdout
+
+def test_log_lines_are_timestamped(tmp_path):
+    # Every line in the log starts with the time it was received, in order, and the log ends
+    # with the exit code
+    import re
+    from datetime import datetime
+    script = tmp_path / "fake_tx_waveforms_steps.py"
+    script.write_text('import time\nprint("step 1")\ntime.sleep(0.3)\nprint("step 2")\ntime.sleep(30)\n')
+    logPath = tmp_path / "usrp.txt"
+    rf = USRPTransmitter(script_path=str(script), python=sys.executable, log_path=str(logPath))
+    rf.tx(123e6, duration=60)
+    end = time.monotonic() + 10
+    while "step 2" not in logPath.read_text() and time.monotonic() < end:
+        time.sleep(0.05)
+    rf.stop()
+
+    lines = logPath.read_text().splitlines()
+    pattern = re.compile(r'^(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2},\d{3}) - (.*)$')
+    assert all(pattern.match(line) for line in lines), lines
+    times = [datetime.strptime(pattern.match(line).group(1), '%Y-%m-%d %H:%M:%S,%f') for line in lines]
+    assert times == sorted(times)
+
+    messages = [pattern.match(line).group(2) for line in lines]
+    assert str(script) in messages[0]                       # The command line
+    assert messages[1:3] == ["step 1", "step 2"]            # The output, line by line
+    assert messages[-1].startswith("Exited with code")      # Written after stop()
+    # The timestamps reflect when each line was printed
+    assert (times[2] - times[1]).total_seconds() >= 0.25
+
+def test_log_records_failure_to_start(tmp_path, fake_script):
+    logPath = tmp_path / "usrp.txt"
+    rf = USRPTransmitter(script_path=str(fake_script), python="/nonexistent/python", log_path=str(logPath))
+    with pytest.raises(OSError):
+        rf.tx(123e6, duration=60)
+    assert "Failed to start" in logPath.read_text().splitlines()[-1]
