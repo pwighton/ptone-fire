@@ -3,7 +3,7 @@
     "parameters": {
         "ptoneTxDelayMs": "0",
         "refChanIdx": "0",
-        "outputFolder": "/tmp/ismrmrd-server-output--pilottone",
+        "outputFolder": "/home/paul/lcn/projects/pt-fire/ismrmrd-server-output",
         "outputFileStem": "pilottone",
         "skipFlags": [
             "ACQ_IS_RTFEEDBACK_DATA", 

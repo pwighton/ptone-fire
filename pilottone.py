@@ -3,6 +3,7 @@ import os
 import json
 import re
 import logging
+import threading
 import numpy as np
 import mrdhelper
 
@@ -109,8 +110,6 @@ def mrd_header_to_xml(mrdHeader):
     return str(mrdHeader)
 
 def process(connection, config, mrdHeader):
-    logging.info("Config: \n%s", config)
-
     results = []  # Per-line analysis results
 
     # Output file for the results
@@ -120,7 +119,21 @@ def process(connection, config, mrdHeader):
     timestamp      = now.strftime('%Y%m%d-%H%M%S') + '-%03d' % (now.microsecond // 1000)  # YYYYMMDD-HHMMSS-mmm
     protocolName   = get_protocol_name(mrdHeader)
     outputFilePath = os.path.join(outputFolder, outputFileStem + '--' + protocolName + '--' + timestamp + '.npz')
+
+    # Also write this scan's log messages to a .txt file alongside the results.  Only messages from
+    # this thread are included, in case the server is handling other connections at the same time
+    logFilePath = os.path.splitext(outputFilePath)[0] + '.txt'
+    os.makedirs(outputFolder, exist_ok=True)
+    logHandler = logging.FileHandler(logFilePath)
+    logHandler.setFormatter(logging.Formatter('%(asctime)s - %(message)s'))
+    thisThread = threading.get_ident()
+    logHandler.addFilter(lambda record: record.thread == thisThread)
+    logging.getLogger().addHandler(logHandler)
+
+    logging.info("Config: \n%s", config)
+    logging.info("mrdHeader: \n%s", mrdHeader)
     logging.info("Results will be saved to %s", outputFilePath)
+    logging.info("Log will be saved to %s", logFilePath)
 
     # The pilot tone transmitter is enabled when the first k-space line is received, so lines
     # within ptoneTxDelayMs of the first line are skipped while it starts up
@@ -189,11 +202,17 @@ def process(connection, config, mrdHeader):
                 phaseMidpoint = result['relative_phase']
                 logging.info("Setting phase range midpoint to %s", phaseMidpoint)
 
+    except Exception:
+        # Logged here rather than left to the server, so the traceback is also in the log file
+        logging.exception("pilottone processing failed")
+
     finally:
         if numChanMismatch > 0:
             logging.warning("Skipped %d lines with a mismatched channel count", numChanMismatch)
         save_results(results, outputFilePath, timestamp, config, settings, mrdHeader)
         connection.send_close()
+        logging.getLogger().removeHandler(logHandler)
+        logHandler.close()
 
 def analyze_line(acq, refChanIdx=0, phaseMidpoint=None):
     # acq.data is complex64 with shape [channels, readout samples]
