@@ -1,5 +1,7 @@
 import ismrmrd
 import os
+import json
+import re
 import logging
 import numpy as np
 import mrdhelper
@@ -7,9 +9,12 @@ import mrdhelper
 import sys
 import traceback
 import time
+from datetime import datetime
 
-# Folder for debug output files
-debugFolder = "/tmp/share/debug"
+# Defaults for the outputFolder and outputFileStem parameters in pilottone.json.  Results are saved to
+# <outputFolder>/<outputFileStem>--<protocolName>--<YYYYMMDD-HHMMSS-mmm>.npz, timestamped when processing starts
+defaultOutputFolder   = "/tmp/ismrmrd-server-output--pilottone"
+defaultOutputFileStem = "pilottone"
 
 fft  = lambda x, ax : np.fft.fftshift(np.fft.fft(np.fft.ifftshift(x, axes=ax), norm='ortho', axis=ax), axes=ax)
 ifft = lambda X, ax : np.fft.fftshift(np.fft.ifft(np.fft.ifftshift(X, axes=ax), norm='ortho', axis=ax), axes=ax)
@@ -84,10 +89,38 @@ def is_image_line(acq, skipFlags, dontSkipFlags):
         return True
     return not any(acq.is_flag_set(flag) for flag in skipFlags)
 
+def get_protocol_name(mrdHeader):
+    # Protocol name from the MRD header, with characters other than letters, digits, '.', '_' and '-'
+    # replaced by '_' so it's safe in a filename.  The server passes the header as text if it isn't valid MRD XML
+    try:
+        protocolName = mrdHeader.measurementInformation.protocolName
+    except AttributeError:
+        protocolName = None
+    if not protocolName:
+        return 'unknown'
+    return re.sub(r'[^A-Za-z0-9._-]', '_', protocolName)
+
+def mrd_header_to_xml(mrdHeader):
+    # MRD header as XML text for saving.  The server passes the header as text if it isn't valid MRD XML
+    if isinstance(mrdHeader, ismrmrd.xsd.ismrmrdHeader):
+        return ismrmrd.xsd.ToXML(mrdHeader)
+    if mrdHeader is None:
+        return ''
+    return str(mrdHeader)
+
 def process(connection, config, mrdHeader):
     logging.info("Config: \n%s", config)
 
     results = []  # Per-line analysis results
+
+    # Output file for the results
+    outputFolder   = mrdhelper.get_json_config_param(config, 'outputFolder',   default=defaultOutputFolder,   type='str')
+    outputFileStem = mrdhelper.get_json_config_param(config, 'outputFileStem', default=defaultOutputFileStem, type='str')
+    now            = datetime.now()
+    timestamp      = now.strftime('%Y%m%d-%H%M%S') + '-%03d' % (now.microsecond // 1000)  # YYYYMMDD-HHMMSS-mmm
+    protocolName   = get_protocol_name(mrdHeader)
+    outputFilePath = os.path.join(outputFolder, outputFileStem + '--' + protocolName + '--' + timestamp + '.npz')
+    logging.info("Results will be saved to %s", outputFilePath)
 
     # The pilot tone transmitter is enabled when the first k-space line is received, so lines
     # within ptoneTxDelayMs of the first line are skipped while it starts up
@@ -105,12 +138,22 @@ def process(connection, config, mrdHeader):
 
     numChanMismatch = 0  # Lines skipped because their channel count differs from the first analyzed line
 
+    # Settings actually used (config values with defaults filled in), saved with the results
+    settings = {
+        'outputFolder':   outputFolder,
+        'outputFileStem': outputFileStem,
+        'ptoneTxDelayMs': ptoneTxDelayMs,
+        'refChanIdx':     refChanIdx,
+    }
+
     try:
         # Lines to analyze, based on their ISMRMRD flags (see defaultSkipFlags and defaultDontSkipFlags)
         skipFlags, skipFlagNames = get_flags_config_param(config, 'skipFlags', defaultSkipFlags)
         dontSkipFlags, dontSkipFlagNames = get_flags_config_param(config, 'dontSkipFlags', defaultDontSkipFlags)
         logging.info("Skipping lines with flags: %s", ', '.join(skipFlagNames))
         logging.info("Unless they have flags:    %s", ', '.join(dontSkipFlagNames))
+        settings['skipFlags']     = skipFlagNames
+        settings['dontSkipFlags'] = dontSkipFlagNames
 
         for item in connection:
             if item is None:
@@ -149,7 +192,7 @@ def process(connection, config, mrdHeader):
     finally:
         if numChanMismatch > 0:
             logging.warning("Skipped %d lines with a mismatched channel count", numChanMismatch)
-        save_results(results)
+        save_results(results, outputFilePath, timestamp, config, settings, mrdHeader)
         connection.send_close()
 
 def analyze_line(acq, refChanIdx=0, phaseMidpoint=None):
@@ -184,15 +227,15 @@ def analyze_line(acq, refChanIdx=0, phaseMidpoint=None):
     logging.debug("Line %4d (scan %5d): mean amplitude %g, quality %.3f", result['line'], result['scan_counter'], np.mean(result['amplitude']), quality)
     return result
 
-def save_results(results):
+def save_results(results, filePath, timestamp, config, settings, mrdHeader):
     if len(results) == 0:
         return
 
-    if not os.path.exists(debugFolder):
-        os.makedirs(debugFolder)
-        logging.debug("Created folder " + debugFolder + " for debug output files")
+    outputFolder = os.path.dirname(filePath)
+    if (outputFolder != "") and (not os.path.exists(outputFolder)):
+        os.makedirs(outputFolder)
+        logging.debug("Created folder " + outputFolder + " for output files")
 
-    filePath = os.path.join(debugFolder, "pilottone.npz")
     np.savez(filePath,
              scan_counter = np.array([r['scan_counter'] for r in results]),
              line         = np.array([r['line']         for r in results]),
@@ -202,5 +245,9 @@ def save_results(results):
              phase        = np.stack([r['phase']        for r in results]),  # [lines, channels]
              quality      = np.array([r['quality']      for r in results]),
              relative_amplitude = np.stack([r['relative_amplitude'] for r in results]),  # [lines, channels]
-             relative_phase     = np.stack([r['relative_phase']     for r in results]))  # [lines, channels]
+             relative_phase     = np.stack([r['relative_phase']     for r in results]),  # [lines, channels]
+             timestamp    = np.array(timestamp),                                # Processing start, YYYYMMDD-HHMMSS-mmm
+             config       = np.array(json.dumps(config, indent=4)),            # Config as received, as JSON text
+             settings     = np.array(json.dumps(settings, indent=4)),          # Settings actually used, as JSON text
+             mrd_header   = np.array(mrd_header_to_xml(mrdHeader)))            # MRD header, as XML text
     logging.info("Saved pilot tone results for %d lines to %s", len(results), filePath)

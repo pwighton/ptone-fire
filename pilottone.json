@@ -3,6 +3,8 @@
     "parameters": {
         "ptoneTxDelayMs": "0",
         "refChanIdx": "0",
+        "outputFolder": "/tmp/ismrmrd-server-output--pilottone",
+        "outputFileStem": "pilottone",
         "skipFlags": [
             "ACQ_IS_RTFEEDBACK_DATA", 
             "ACQ_IS_HPFEEDBACK_DATA", 
