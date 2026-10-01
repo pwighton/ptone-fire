@@ -4,7 +4,8 @@
         "ptoneTxDelayMs": "0",
         "refChanIdx": "0",
         "skipFlags": [
-            "ACQ_IS_RTFEEDBACK_DATA, ACQ_IS_HPFEEDBACK_DATA", 
+            "ACQ_IS_RTFEEDBACK_DATA", 
+            "ACQ_IS_HPFEEDBACK_DATA", 
             "ACQ_IS_PHASE_STABILIZATION_REFERENCE", 
             "ACQ_IS_PHASE_STABILIZATION", 
             "ACQ_IS_PHASECORR_DATA", 
