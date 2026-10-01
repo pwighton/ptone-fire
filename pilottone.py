@@ -40,27 +40,49 @@ def estimate_ptone_params_initial_np_linalg_svd(scan_data, filter_img_data=True)
     param_est[1,:] = np.angle(vh_prime)
     return param_est, quality
 
-# Equivalent of is_image_scan() in kstream's twixtools_mdh.py, using ISMRMRD flags.
+# Defaults for the skipFlags and dontSkipFlags parameters in pilottone.json.  These are the equivalent
+# of is_image_scan() in kstream's twixtools_mdh.py, using ISMRMRD flags.
 # Siemens flags with no ISMRMRD equivalent (SLICE_ACCEL_REFSCAN, SLICE_ACCEL_PHASCOR, noname60)
 # can't be checked.  SYNCDATA arrives as waveforms and ACQEND has no acquisition, so neither is needed
-imageLineDisqualifierFlags = [
-    ismrmrd.ACQ_IS_RTFEEDBACK_DATA,                 # RTFEEDBACK
-    ismrmrd.ACQ_IS_HPFEEDBACK_DATA,                 # HPFEEDBACK
-    ismrmrd.ACQ_IS_PHASE_STABILIZATION_REFERENCE,   # REFPHASESTABSCAN
-    ismrmrd.ACQ_IS_PHASE_STABILIZATION,             # PHASESTABSCAN
-    ismrmrd.ACQ_IS_PHASECORR_DATA,                  # PHASCOR
-    ismrmrd.ACQ_IS_NOISE_MEASUREMENT,               # NOISEADJSCAN
-    ismrmrd.ACQ_IS_PARALLEL_CALIBRATION,            # PATREFSCAN
+defaultSkipFlags = [
+    'ACQ_IS_RTFEEDBACK_DATA',                 # RTFEEDBACK
+    'ACQ_IS_HPFEEDBACK_DATA',                 # HPFEEDBACK
+    'ACQ_IS_PHASE_STABILIZATION_REFERENCE',   # REFPHASESTABSCAN
+    'ACQ_IS_PHASE_STABILIZATION',             # PHASESTABSCAN
+    'ACQ_IS_PHASECORR_DATA',                  # PHASCOR
+    'ACQ_IS_NOISE_MEASUREMENT',               # NOISEADJSCAN
+    'ACQ_IS_PARALLEL_CALIBRATION',            # PATREFSCAN
     # Not in twixtools_mdh.py.  fast_phase_avg.py skips the whole AdjCoilSens measurement instead
-    ismrmrd.ACQ_IS_SURFACECOILCORRECTIONSCAN_DATA,
-    ismrmrd.ACQ_IS_NAVIGATION_DATA,
+    'ACQ_IS_SURFACECOILCORRECTIONSCAN_DATA',
+    'ACQ_IS_NAVIGATION_DATA',
 ]
 
-def is_image_line(acq):
-    # As in twixtools_mdh.py, PATREFANDIMASCAN lines are image lines regardless of other flags
-    if acq.is_flag_set(ismrmrd.ACQ_IS_PARALLEL_CALIBRATION_AND_IMAGING):
+# Defaults for the dontSkipFlags
+# As in twixtools_mdh.py, PATREFANDIMASCAN lines are image lines regardless of other flags
+defaultDontSkipFlags = [
+    'ACQ_IS_PARALLEL_CALIBRATION_AND_IMAGING',  # PATREFANDIMASCAN
+]
+
+def get_flags_config_param(config, key, default):
+    # Read a list of ISMRMRD flag names from the JSON config, as either a JSON list or a
+    # comma-separated string, and convert them to flag values.  Unknown names raise an error
+    names = default
+    if isinstance(config, dict) and key in config.get('parameters', {}):
+        names = config['parameters'][key]
+        if isinstance(names, str):
+            names = [name.strip() for name in names.split(',') if name.strip() != '']
+
+    unknown = [name for name in names if not (name.startswith('ACQ_') and isinstance(getattr(ismrmrd, name, None), int))]
+    if len(unknown) > 0:
+        raise ValueError("Unknown ISMRMRD flag(s) in '%s': %s" % (key, ', '.join(unknown)))
+
+    return [getattr(ismrmrd, name) for name in names], names
+
+def is_image_line(acq, skipFlags, dontSkipFlags):
+    # Lines with any dontSkipFlags set are image lines; otherwise lines with any skipFlags set are not
+    if any(acq.is_flag_set(flag) for flag in dontSkipFlags):
         return True
-    return not any(acq.is_flag_set(flag) for flag in imageLineDisqualifierFlags)
+    return not any(acq.is_flag_set(flag) for flag in skipFlags)
 
 def process(connection, config, mrdHeader):
     logging.info("Config: \n%s", config)
@@ -84,6 +106,12 @@ def process(connection, config, mrdHeader):
     numChanMismatch = 0  # Lines skipped because their channel count differs from the first analyzed line
 
     try:
+        # Lines to analyze, based on their ISMRMRD flags (see defaultSkipFlags and defaultDontSkipFlags)
+        skipFlags, skipFlagNames = get_flags_config_param(config, 'skipFlags', defaultSkipFlags)
+        dontSkipFlags, dontSkipFlagNames = get_flags_config_param(config, 'dontSkipFlags', defaultDontSkipFlags)
+        logging.info("Skipping lines with flags: %s", ', '.join(skipFlagNames))
+        logging.info("Unless they have flags:    %s", ', '.join(dontSkipFlagNames))
+
         for item in connection:
             if item is None:
                 break
@@ -92,7 +120,7 @@ def process(connection, config, mrdHeader):
                 continue
 
             # Skip non-imaging lines
-            if not is_image_line(item):
+            if not is_image_line(item, skipFlags, dontSkipFlags):
                 continue
 
             # Skip lines until the pilot tone is on.  Timestamps are 2.5 ms ticks since midnight,
