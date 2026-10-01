@@ -7,7 +7,7 @@ Wraps tx_waveforms.py in a subprocess for non-blocking transmission control.
 Copied from kstream (kstream/usrp_transmitter.py and kstream/tx_waveforms.py at commit 850c2ea).
 Changes from kstream: the Python interpreter that runs tx_waveforms.py is configurable (python),
 since it needs the UHD Python bindings, which the environment running this class may not have; and
-the subprocess output can be written to a file (log_path) instead of being discarded.
+the subprocess output can be written to a file (log_path, unbuffered) instead of being discarded.
 
 Rename either `tx_waveforms3.15.py` or `tx_waveforms4.py` to `tx_waveforms.py`
 to switch vesions 
@@ -17,6 +17,7 @@ See:
   - https://github.com/EttusResearch/uhd/blob/master/host/examples/python/tx_waveforms.py
 """
 
+import os
 import subprocess
 from pathlib import Path
 from typing import Optional
@@ -130,6 +131,8 @@ class USRPTransmitter:
             logFile.flush()
             kwargs["stdout"] = logFile
             kwargs["stderr"] = subprocess.STDOUT
+            # Unbuffered, so print() output reaches the log even when the process is stopped by stop()
+            kwargs["env"] = dict(os.environ, PYTHONUNBUFFERED="1")
         elif not self.verbose:
             kwargs["stdout"] = subprocess.DEVNULL
             kwargs["stderr"] = subprocess.DEVNULL

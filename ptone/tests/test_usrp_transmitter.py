@@ -111,3 +111,17 @@ def test_tx_waveforms_starts():
     result = subprocess.run([txPython, script, '--help'], capture_output=True, text=True, timeout=60)
     assert result.returncode == 0, result.stderr
     assert '--freq' in result.stdout
+
+def test_log_path_gets_output_printed_before_stop(tmp_path):
+    # print() output that's still buffered when the transmitter is stopped must reach the log, as
+    # with tx_waveforms.py's "Starting to stream waveform..." message
+    script = tmp_path / "fake_tx_waveforms_no_flush.py"
+    script.write_text('import time\nprint("Starting to stream waveform")\ntime.sleep(30)\n')
+    logPath = tmp_path / "usrp.txt"
+    rf = USRPTransmitter(script_path=str(script), python=sys.executable, log_path=str(logPath))
+    rf.tx(123e6, duration=60)
+    end = time.monotonic() + 10
+    while "Starting to stream waveform" not in logPath.read_text() and time.monotonic() < end:
+        time.sleep(0.05)
+    rf.stop()
+    assert "Starting to stream waveform" in logPath.read_text()
