@@ -27,6 +27,7 @@ defaultPtoneTxBandPosition = 0.5     # bandPosition in ptone_tx_frequency(): hal
 defaultPtoneTxSide         = 'high'  # side in ptone_tx_frequency()
 defaultPtoneTxDB           = 70      # Transmit gain (dB), as in kstream's prot/aria scripts
 defaultPtoneTxMaxDurationS = 3600    # Safety limit on transmission time, in case the transmitter isn't stopped
+defaultPtoneTxDeviceArgs   = ''      # UHD device arguments (tx_waveforms.py --args).  Empty: UHD searches for any USRP
 # Python that runs ptone/tx_waveforms.py.  It needs UHD, which can't be installed in this environment
 # (see ptone/environment-tx.yml), so default to the 'ptone-tx' conda environment alongside this one
 defaultPtoneTxPython       = os.path.join(os.path.dirname(sys.prefix), 'ptone-tx', 'bin', 'python')
@@ -184,6 +185,7 @@ def process(connection, config, mrdHeader):
         ptoneTxOverrideFreqHz = float(ptoneTxOverrideFreqHz) if ptoneTxOverrideFreqHz.strip() != '' else None
         ptoneTxPython       = mrdhelper.get_json_config_param(config, 'ptoneTxPython',       default=defaultPtoneTxPython,       type='str')
         ptoneTxMaxDurationS = mrdhelper.get_json_config_param(config, 'ptoneTxMaxDurationS', default=defaultPtoneTxMaxDurationS, type='float')
+        ptoneTxDeviceArgs   = mrdhelper.get_json_config_param(config, 'ptoneTxDeviceArgs',   default=defaultPtoneTxDeviceArgs,   type='str')
         ptoneTxLogPath      = os.path.splitext(outputFilePath)[0] + '--usrp.txt'  # Output of tx_waveforms.py
         check_band_position_and_side(ptoneTxBandPosition, ptoneTxSide)
         ptoneTxFreqHz = None
@@ -205,6 +207,7 @@ def process(connection, config, mrdHeader):
         settings['ptoneTxOverrideFreqHz'] = ptoneTxOverrideFreqHz
         settings['ptoneTxFreqHz']         = ptoneTxFreqHz  # Updated at the first imaging line
         settings['ptoneTxPython']         = ptoneTxPython
+        settings['ptoneTxDeviceArgs']     = ptoneTxDeviceArgs
         settings['ptoneTxMaxDurationS']   = ptoneTxMaxDurationS
         settings['ptoneTxStarted']        = False          # Updated when transmission starts
         settings['ptoneTxExitCode']       = None           # Set if the transmitter stops before the scan ends
@@ -244,7 +247,7 @@ def process(connection, config, mrdHeader):
                         logging.error("Pilot tone not transmitted: no frequency")
                     else:
                         try:
-                            transmitter = USRPTransmitter(python=ptoneTxPython, log_path=ptoneTxLogPath)
+                            transmitter = USRPTransmitter(python=ptoneTxPython, device_args=ptoneTxDeviceArgs, log_path=ptoneTxLogPath)
                             transmitter.tx(ptoneTxFreqHz, duration=ptoneTxMaxDurationS, gain=ptoneTxDB)
                             settings['ptoneTxStarted'] = True
                             logging.info("Pilot tone transmitter started: %.0f Hz, %g dB, using %s.  Output in %s",
