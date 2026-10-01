@@ -12,7 +12,6 @@
             "ACQ_IS_PHASE_STABILIZATION", 
             "ACQ_IS_PHASECORR_DATA", 
             "ACQ_IS_NOISE_MEASUREMENT", 
-            "ACQ_IS_PARALLEL_CALIBRATION", 
             "ACQ_IS_SURFACECOILCORRECTIONSCAN_DATA", 
             "ACQ_IS_NAVIGATION_DATA"
         ],

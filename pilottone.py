@@ -30,7 +30,8 @@ defaultSkipFlags = [
     'ACQ_IS_PHASE_STABILIZATION',             # PHASESTABSCAN
     'ACQ_IS_PHASECORR_DATA',                  # PHASCOR
     'ACQ_IS_NOISE_MEASUREMENT',               # NOISEADJSCAN
-    'ACQ_IS_PARALLEL_CALIBRATION',            # PATREFSCAN
+    # When using fast_phase_avg --use-nonimage-scans, ACQ_IS_PARALLEL_CALIBRATION are included
+    #'ACQ_IS_PARALLEL_CALIBRATION',            # PATREFSCAN
     # Not in twixtools_mdh.py.  fast_phase_avg.py skips the whole AdjCoilSens measurement instead
     'ACQ_IS_SURFACECOILCORRECTIONSCAN_DATA',
     'ACQ_IS_NAVIGATION_DATA',
