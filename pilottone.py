@@ -51,7 +51,7 @@ def process(connection, config, mrdHeader):
     firstTimeMs  = None
     logging.info("Skipping lines within %g ms of the first line", ptoneTxDelayMs)
 
-    # Per-channel midpoint of the phase range, set from the first line.
+    # Per-channel midpoint of the phase range, set from the first line after ptoneTxDelayMs.
     # Keeping phases within [midpoint - pi, midpoint + pi] minimizes phase wraps across the scan
     phaseMidpoint = None
 
@@ -79,7 +79,7 @@ def process(connection, config, mrdHeader):
             results.append(result)
 
             if phaseMidpoint is None:
-                phaseMidpoint = result['phase']
+                phaseMidpoint = result['relative_phase']
                 logging.info("Setting phase range midpoint to %s", phaseMidpoint)
 
     finally:
