@@ -40,6 +40,28 @@ def estimate_ptone_params_initial_np_linalg_svd(scan_data, filter_img_data=True)
     param_est[1,:] = np.angle(vh_prime)
     return param_est, quality
 
+# Equivalent of is_image_scan() in kstream's twixtools_mdh.py, using ISMRMRD flags.
+# Siemens flags with no ISMRMRD equivalent (SLICE_ACCEL_REFSCAN, SLICE_ACCEL_PHASCOR, noname60)
+# can't be checked.  SYNCDATA arrives as waveforms and ACQEND has no acquisition, so neither is needed
+imageLineDisqualifierFlags = [
+    ismrmrd.ACQ_IS_RTFEEDBACK_DATA,                 # RTFEEDBACK
+    ismrmrd.ACQ_IS_HPFEEDBACK_DATA,                 # HPFEEDBACK
+    ismrmrd.ACQ_IS_PHASE_STABILIZATION_REFERENCE,   # REFPHASESTABSCAN
+    ismrmrd.ACQ_IS_PHASE_STABILIZATION,             # PHASESTABSCAN
+    ismrmrd.ACQ_IS_PHASECORR_DATA,                  # PHASCOR
+    ismrmrd.ACQ_IS_NOISE_MEASUREMENT,               # NOISEADJSCAN
+    ismrmrd.ACQ_IS_PARALLEL_CALIBRATION,            # PATREFSCAN
+    # Not in twixtools_mdh.py.  fast_phase_avg.py skips the whole AdjCoilSens measurement instead
+    ismrmrd.ACQ_IS_SURFACECOILCORRECTIONSCAN_DATA,
+    ismrmrd.ACQ_IS_NAVIGATION_DATA,
+]
+
+def is_image_line(acq):
+    # As in twixtools_mdh.py, PATREFANDIMASCAN lines are image lines regardless of other flags
+    if acq.is_flag_set(ismrmrd.ACQ_IS_PARALLEL_CALIBRATION_AND_IMAGING):
+        return True
+    return not any(acq.is_flag_set(flag) for flag in imageLineDisqualifierFlags)
+
 def process(connection, config, mrdHeader):
     logging.info("Config: \n%s", config)
 
@@ -59,6 +81,8 @@ def process(connection, config, mrdHeader):
     # Keeping phases within [midpoint - pi, midpoint + pi] minimizes phase wraps across the scan
     phaseMidpoint = None
 
+    numChanMismatch = 0  # Lines skipped because their channel count differs from the first analyzed line
+
     try:
         for item in connection:
             if item is None:
@@ -68,7 +92,7 @@ def process(connection, config, mrdHeader):
                 continue
 
             # Skip non-imaging lines
-            if item.is_flag_set(ismrmrd.ACQ_IS_NOISE_MEASUREMENT) or item.is_flag_set(ismrmrd.ACQ_IS_PHASECORR_DATA):
+            if not is_image_line(item):
                 continue
 
             # Skip lines until the pilot tone is on.  Timestamps are 2.5 ms ticks since midnight,
@@ -79,6 +103,14 @@ def process(connection, config, mrdHeader):
             if (timeMs - firstTimeMs) % (24*60*60*1000) < ptoneTxDelayMs:
                 continue
 
+            # Skip lines whose channel count differs from the line the phase midpoint was set from
+            if (phaseMidpoint is not None) and (item.data.shape[0] != len(phaseMidpoint)):
+                if numChanMismatch == 0:
+                    logging.warning("Skipping line (scan %d) with %d channels; expected %d.  Further mismatches are counted but not logged",
+                                    item.scan_counter, item.data.shape[0], len(phaseMidpoint))
+                numChanMismatch += 1
+                continue
+
             result = analyze_line(item, refChanIdx, phaseMidpoint)
             results.append(result)
 
@@ -87,6 +119,8 @@ def process(connection, config, mrdHeader):
                 logging.info("Setting phase range midpoint to %s", phaseMidpoint)
 
     finally:
+        if numChanMismatch > 0:
+            logging.warning("Skipped %d lines with a mismatched channel count", numChanMismatch)
         save_results(results)
         connection.send_close()
 
