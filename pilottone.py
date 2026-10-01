@@ -272,7 +272,7 @@ def save_results(results, filePath, timestamp, config, settings, mrdHeader):
              quality      = np.array([r['quality']      for r in results]),
              relative_amplitude = np.stack([r['relative_amplitude'] for r in results]),  # [lines, channels]
              relative_phase     = np.stack([r['relative_phase']     for r in results]),  # [lines, channels]
-             timestamp    = np.array(timestamp),                                # Processing start, YYYYMMDD-HHMMSS-mmm
+             timestamp    = np.array(timestamp),                               # Processing start, YYYYMMDD-HHMMSS-mmm
              config       = np.array(json.dumps(config, indent=4)),            # Config as received, as JSON text
              settings     = np.array(json.dumps(settings, indent=4)),          # Settings actually used, as JSON text
              mrd_header   = np.array(mrd_header_to_xml(mrdHeader)))            # MRD header, as XML text
