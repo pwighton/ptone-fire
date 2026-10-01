@@ -1,15 +1,17 @@
 {
     "version": "0.0.1",
     "parameters": {
-        "outputFolder": "/home/paul/lcn/projects/pt-fire/ismrmrd-server-output",
-        "outputFileStem": "pilottone",
+        "ptoneTx": "true",
         "ptoneTxDelayMs": "0",
-        "ptoneTx": "false",
-        "ptoneTxBandPosition": "0.5",
-        "ptoneTxSide": "high",
         "ptoneTxOverrideFreqHz": "",
         "ptoneTxDB": "70",
+        "ptoneTxBandPosition": "0.5",
+        "ptoneTxSide": "high",
+        "ptoneTxMaxDurationS": "3600",
+        "ptoneTxPython": "/home/paul/miniconda3/envs/ptone-tx/bin/python",
         "refChanIdx": "0",
+        "outputFolder": "/home/paul/lcn/projects/pt-fire/ismrmrd-server-output",
+        "outputFileStem": "pilottone",
         "skipFlags": [
             "ACQ_IS_RTFEEDBACK_DATA", 
             "ACQ_IS_HPFEEDBACK_DATA", 

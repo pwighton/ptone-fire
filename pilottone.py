@@ -9,6 +9,7 @@ import numpy as np
 import mrdhelper
 from ptone.estimate import analyze_line
 from ptone.tx_frequency import check_band_position_and_side, ptone_tx_frequency
+from ptone.usrp_transmitter import USRPTransmitter
 
 import sys
 import traceback
@@ -25,6 +26,10 @@ defaultPtoneTx             = False   # Don't transmit unless the config asks for
 defaultPtoneTxBandPosition = 0.5     # bandPosition in ptone_tx_frequency(): halfway between imaging and readout band edges
 defaultPtoneTxSide         = 'high'  # side in ptone_tx_frequency()
 defaultPtoneTxDB           = 70      # Transmit gain (dB), as in kstream's prot/aria scripts
+defaultPtoneTxMaxDurationS = 3600    # Safety limit on transmission time, in case the transmitter isn't stopped
+# Python that runs ptone/tx_waveforms.py.  It needs UHD, which can't be installed in this environment
+# (see ptone/environment-tx.yml), so default to the 'ptone-tx' conda environment alongside this one
+defaultPtoneTxPython       = os.path.join(os.path.dirname(sys.prefix), 'ptone-tx', 'bin', 'python')
 
 # Defaults for the skipFlags and dontSkipFlags parameters in pilottone.json.  These are the equivalent
 # of is_image_scan() in kstream's twixtools_mdh.py, using ISMRMRD flags.
@@ -148,6 +153,8 @@ def process(connection, config, mrdHeader):
 
     numChanMismatch = 0  # Lines skipped because their channel count differs from the first analyzed line
 
+    transmitter = None  # USRPTransmitter, once transmission has started
+
     # Settings actually used (config values with defaults filled in), saved with the results
     settings = {
         'gitCommit':      gitCommit,
@@ -175,6 +182,9 @@ def process(connection, config, mrdHeader):
         ptoneTxDB           = mrdhelper.get_json_config_param(config, 'ptoneTxDB',           default=defaultPtoneTxDB,           type='float')
         ptoneTxOverrideFreqHz = mrdhelper.get_json_config_param(config, 'ptoneTxOverrideFreqHz', default='', type='str')
         ptoneTxOverrideFreqHz = float(ptoneTxOverrideFreqHz) if ptoneTxOverrideFreqHz.strip() != '' else None
+        ptoneTxPython       = mrdhelper.get_json_config_param(config, 'ptoneTxPython',       default=defaultPtoneTxPython,       type='str')
+        ptoneTxMaxDurationS = mrdhelper.get_json_config_param(config, 'ptoneTxMaxDurationS', default=defaultPtoneTxMaxDurationS, type='float')
+        ptoneTxLogPath      = os.path.splitext(outputFilePath)[0] + '--usrp.txt'  # Output of tx_waveforms.py
         check_band_position_and_side(ptoneTxBandPosition, ptoneTxSide)
         ptoneTxFreqHz = None
 
@@ -194,6 +204,10 @@ def process(connection, config, mrdHeader):
         settings['ptoneTxDB']           = ptoneTxDB
         settings['ptoneTxOverrideFreqHz'] = ptoneTxOverrideFreqHz
         settings['ptoneTxFreqHz']         = ptoneTxFreqHz  # Updated at the first imaging line
+        settings['ptoneTxPython']         = ptoneTxPython
+        settings['ptoneTxMaxDurationS']   = ptoneTxMaxDurationS
+        settings['ptoneTxStarted']        = False          # Updated when transmission starts
+        settings['ptoneTxExitCode']       = None           # Set if the transmitter stops before the scan ends
 
         for item in connection:
             if item is None:
@@ -223,6 +237,21 @@ def process(connection, config, mrdHeader):
                 if ptoneTxFreqHz is not None:
                     logging.info("Pilot tone frequency: %.0f Hz%s", ptoneTxFreqHz, "" if ptoneTx else " (not transmitted, ptoneTx is false)")
                 settings['ptoneTxFreqHz'] = ptoneTxFreqHz
+
+                # Start transmitting.  A failure here is logged but doesn't stop the analysis
+                if ptoneTx:
+                    if ptoneTxFreqHz is None:
+                        logging.error("Pilot tone not transmitted: no frequency")
+                    else:
+                        try:
+                            transmitter = USRPTransmitter(python=ptoneTxPython, log_path=ptoneTxLogPath)
+                            transmitter.tx(ptoneTxFreqHz, duration=ptoneTxMaxDurationS, gain=ptoneTxDB)
+                            settings['ptoneTxStarted'] = True
+                            logging.info("Pilot tone transmitter started: %.0f Hz, %g dB, using %s.  Output in %s",
+                                         ptoneTxFreqHz, ptoneTxDB, ptoneTxPython, ptoneTxLogPath)
+                        except Exception as e:
+                            transmitter = None
+                            logging.error("Pilot tone transmitter failed to start: %s", e)
             if (timeMs - firstTimeMs) % (24*60*60*1000) < ptoneTxDelayMs:
                 continue
 
@@ -246,6 +275,15 @@ def process(connection, config, mrdHeader):
         logging.exception("pilottone processing failed")
 
     finally:
+        # Stop transmitting, noting if the transmitter had already stopped (e.g. an error in tx_waveforms.py)
+        if transmitter is not None:
+            if not transmitter.is_transmitting():
+                exitCode = transmitter.wait(timeout=0)
+                settings['ptoneTxExitCode'] = exitCode
+                logging.warning("Pilot tone transmitter stopped before the end of the scan (exit code %d).  See %s", exitCode, ptoneTxLogPath)
+            transmitter.stop()
+            logging.info("Pilot tone transmitter stopped")
+
         if numChanMismatch > 0:
             logging.warning("Skipped %d lines with a mismatched channel count", numChanMismatch)
         save_results(results, outputFilePath, timestamp, config, settings, mrdHeader)

@@ -1,0 +1,21 @@
+# Environment for the pilot tone transmitter (ptone/tx_waveforms.py), which needs the UHD Python
+# bindings to drive the USRP.
+#
+# Why a separate environment: UHD can't be installed in the main 'mrd' environment (../environment.yml).
+# siemens_to_ismrmrd 1.2.13 requires boost 1.76, while current UHD (4.9) requires boost 1.88.
+# pilottone.py runs in 'mrd' and starts tx_waveforms.py as a separate process using this
+# environment's Python (see ptoneTxPython in pilottone.json), so the two never share libraries.
+#
+# The versions match kstream's 'kstream' environment, which is known to work with the USRP B200.
+#
+# Create it with:
+#   conda env create -f ptone/environment-tx.yml
+#   conda activate ptone-tx
+#   uhd_images_downloader -t b2xx      # USRP B2xx firmware/FPGA images (once)
+#   uhd_find_devices                   # Check the USRP is found
+name: ptone-tx
+channels:
+  - conda-forge
+dependencies:
+  - python=3.11
+  - uhd=4.9.0.1    # Includes numpy, also used by tx_waveforms.py
