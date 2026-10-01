@@ -4,6 +4,7 @@ import json
 import re
 import logging
 import threading
+import subprocess
 import numpy as np
 import mrdhelper
 
@@ -109,6 +110,20 @@ def mrd_header_to_xml(mrdHeader):
         return ''
     return str(mrdHeader)
 
+def get_git_commit():
+    # Git commit of the repository containing this file, noting any uncommitted changes
+    repoDir = os.path.dirname(os.path.abspath(__file__))
+    try:
+        commit = subprocess.run(['git', '-C', repoDir, 'rev-parse', 'HEAD'],
+                                capture_output=True, text=True, timeout=5, check=True).stdout.strip()
+        status = subprocess.run(['git', '-C', repoDir, 'status', '--porcelain'],
+                                capture_output=True, text=True, timeout=5, check=True).stdout.strip()
+    except (OSError, subprocess.SubprocessError) as e:
+        return 'unknown (%s)' % e
+    if status != '':
+        commit += ' (with uncommitted changes)'
+    return commit
+
 def process(connection, config, mrdHeader):
     results = []  # Per-line analysis results
 
@@ -134,6 +149,8 @@ def process(connection, config, mrdHeader):
     logging.info("mrdHeader: \n%s", mrdHeader)
     logging.info("Results will be saved to %s", outputFilePath)
     logging.info("Log will be saved to %s", logFilePath)
+    gitCommit = get_git_commit()
+    logging.info("Git commit: %s", gitCommit)
 
     # The pilot tone transmitter is enabled when the first k-space line is received, so lines
     # within ptoneTxDelayMs of the first line are skipped while it starts up
@@ -153,6 +170,7 @@ def process(connection, config, mrdHeader):
 
     # Settings actually used (config values with defaults filled in), saved with the results
     settings = {
+        'gitCommit':      gitCommit,
         'outputFolder':   outputFolder,
         'outputFileStem': outputFileStem,
         'ptoneTxDelayMs': ptoneTxDelayMs,
