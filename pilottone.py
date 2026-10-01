@@ -45,6 +45,16 @@ def process(connection, config, mrdHeader):
 
     results = []  # Per-line analysis results
 
+    # The pilot tone transmitter is enabled when the first k-space line is received, so lines
+    # within ptoneTxDelayMs of the first line are skipped while it starts up
+    ptoneTxDelayMs = mrdhelper.get_json_config_param(config, 'ptoneTxDelayMs', default=0, type='float')
+    firstTimeMs  = None
+    logging.info("Skipping lines within %g ms of the first line", ptoneTxDelayMs)
+
+    # Per-channel midpoint of the phase range, set from the first line.
+    # Keeping phases within [midpoint - pi, midpoint + pi] minimizes phase wraps across the scan
+    phaseMidpoint = None
+
     try:
         for item in connection:
             if item is None:
@@ -57,28 +67,52 @@ def process(connection, config, mrdHeader):
             if item.is_flag_set(ismrmrd.ACQ_IS_NOISE_MEASUREMENT) or item.is_flag_set(ismrmrd.ACQ_IS_PHASECORR_DATA):
                 continue
 
-            results.append(analyze_line(item))
+            # Skip lines until the pilot tone is on.  Timestamps are 2.5 ms ticks since midnight,
+            # so take the difference modulo one day in case the scan crosses midnight
+            timeMs = item.acquisition_time_stamp * 2.5
+            if firstTimeMs is None:
+                firstTimeMs = timeMs
+            if (timeMs - firstTimeMs) % (24*60*60*1000) < ptoneTxDelayMs:
+                continue
+
+            result = analyze_line(item, phaseMidpoint)
+            results.append(result)
+
+            if phaseMidpoint is None:
+                phaseMidpoint = result['phase']
+                logging.info("Setting phase range midpoint to %s", phaseMidpoint)
 
     finally:
         save_results(results)
         connection.send_close()
 
-def analyze_line(acq):
+def analyze_line(acq, phaseMidpoint=None):
     # acq.data is complex64 with shape [channels, readout samples]
-    
+
     param_est, quality = estimate_ptone_params_initial_np_linalg_svd(np.transpose(acq.data))
+
+    amplitude = param_est[0,:]
+    phase = np.mod(param_est[1,:], 2*np.pi)
     
+    # Phase relative to channel 0, wrapped to [midpoint - pi, midpoint + pi].
+    # Without a midpoint (first line), wrap to [0, 2pi] as in fast_phase_avg.py
+    phaseDiff = phase - phase[0]
+    if phaseMidpoint is None:
+        relativePhase = np.mod(phaseDiff, 2*np.pi)
+    else:
+        relativePhase = phaseMidpoint + np.angle(np.exp(1j * (phaseDiff - phaseMidpoint)))
+
     result = {
         'scan_counter': acq.scan_counter,
         'line':         acq.idx.kspace_encode_step_1,
         'slice':        acq.idx.slice,
         'time_ms':      acq.acquisition_time_stamp * 2.5,  # Siemens timestamps are in 2.5 ms ticks
-        'amplitude':    param_est[0,:],                    # One value per channel
-        'phase':        param_est[1,:],                    # One value per channel (radians)
+        'amplitude':    amplitude,                    # One value per channel
+        'phase':        phase,                    # One value per channel (radians)
         'quality':      quality,
         # Relative to channel 0, removing the per-line scale/phase ambiguity of the SVD estimate
-        'relative_amplitude': param_est[0,:] / param_est[0,0],
-        'relative_phase':     np.angle(np.exp(1j * (param_est[1,:] - param_est[1,0]))),  # Wrapped to [-pi, pi]
+        'relative_amplitude': amplitude / amplitude[0],
+        'relative_phase':     relativePhase,
     }
 
     logging.debug("Line %4d (scan %5d): mean amplitude %g, quality %.3f", result['line'], result['scan_counter'], np.mean(result['amplitude']), quality)
