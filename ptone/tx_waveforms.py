@@ -6,6 +6,10 @@
 #
 # PW sourced from:
 #   https://raw.githubusercontent.com/EttusResearch/uhd/refs/heads/master/host/examples/python/tx_waveforms.py
+#
+# Modified for ptone (copied from kstream at commit 850c2ea):
+#   - Host based mode: --tx-delay 0 starts transmitting immediately (no timed start), as the DRAM
+#     mode already did.  The delay only aligns multiple channels, and the pilot tone uses one
 
 """Example to transmit waveforms using UHD python API.
 
@@ -151,7 +155,9 @@ def multi_usrp_tx(args):
     # configurations and start transmission on all channels simultaneously.
     # If tx_delay is too small, tx_start_time may be in the past by the time
     # all configurations are applied and late command errors being reported.
-    tx_start_time = usrp.get_time_now() + args.tx_delay
+    # ptone: with --tx-delay 0, start immediately (no timed start), as in rfnoc_dram_tx()
+    if args.tx_delay != 0:
+        tx_start_time = usrp.get_time_now() + args.tx_delay
     print("Generating waveform...")
     data = uhd.dsp.signals.get_continuous_tone(
         args.rate,

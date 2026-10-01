@@ -5,7 +5,7 @@ USRP Transmitter class.
 Wraps tx_waveforms.py in a subprocess for non-blocking transmission control.
 
 Copied from kstream (kstream/usrp_transmitter.py and kstream/tx_waveforms.py at commit 850c2ea).
-Changes from kstream: the Python interpreter that runs tx_waveforms.py is configurable (python),
+Changes from kstream: tx_delay (--tx-delay) defaults to 0, so transmission starts immediately; the Python interpreter that runs tx_waveforms.py is configurable (python),
 since it needs the UHD Python bindings, which the environment running this class may not have; and
 the subprocess output can be written to a file (log_path, unbuffered) instead of being discarded.
 
@@ -54,6 +54,7 @@ class USRPTransmitter:
         sample_rate: float = 1e6,
         amplitude: float = 0.3,
         wave_freq: float = 1000.0,
+        tx_delay: float = 0.0,
         verbose: bool = False,
         python: str = "python3",
         log_path: Optional[str] = None,
@@ -70,6 +71,8 @@ class USRPTransmitter:
                        If non-zero, the center frequency will be adjusted so
                        that center_freq + wave_freq = desired output frequency.
                        Set to 0 for DC at baseband if preferred.
+            tx_delay: Seconds tx_waveforms.py waits before transmitting (--tx-delay).  Default 0:
+                      start immediately.  The delay only aligns multiple channels
             verbose: If True, show subprocess output (default False)
             python: Python interpreter used to run tx_waveforms.py.  It needs the UHD Python
                     bindings (import uhd).  Default "python3", found on the PATH
@@ -85,6 +88,7 @@ class USRPTransmitter:
         self.sample_rate = sample_rate
         self.amplitude = amplitude
         self.wave_freq = wave_freq
+        self.tx_delay = tx_delay
         self.verbose = verbose
         self.python = python
         self.log_path = log_path
@@ -118,6 +122,7 @@ class USRPTransmitter:
             "--gain", str(int(gain)),
             "--duration", str(duration),
             "--waveform", "sine",
+            "--tx-delay", str(self.tx_delay),
         ]
         
         if self.device_args:

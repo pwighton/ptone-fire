@@ -60,6 +60,16 @@ def test_command_line(fake_script, tmp_path):
     assert args['--gain'] == '70'
     assert float(args['--duration']) == pytest.approx(60)
     assert args['--waveform'] == 'sine'
+    assert float(args['--tx-delay']) == 0   # Start immediately by default
+
+def test_tx_delay_option(fake_script, tmp_path):
+    rf = USRPTransmitter(script_path=str(fake_script), python=sys.executable, tx_delay=0.5)
+    try:
+        rf.tx(123e6, duration=60)
+        args = read_args(tmp_path)
+    finally:
+        rf.stop()
+    assert float(args['--tx-delay']) == pytest.approx(0.5)
 
 def test_is_transmitting_and_stop(fake_script, tmp_path):
     rf = USRPTransmitter(script_path=str(fake_script), python=sys.executable)
@@ -125,3 +135,34 @@ def test_log_path_gets_output_printed_before_stop(tmp_path):
         time.sleep(0.05)
     rf.stop()
     assert "Starting to stream waveform" in logPath.read_text()
+
+# Runs multi_usrp_tx() from tx_waveforms.py with uhd.usrp.MultiUSRP replaced by a stand-in, and
+# prints the start_time it passes to send_waveform()
+START_TIME_CHECK = '''
+import sys, types
+sys.path.insert(0, SCRIPT_DIR)
+import uhd, tx_waveforms
+
+class FakeMultiUSRP:
+    def __init__(self, args): pass
+    def get_time_now(self): return uhd.types.TimeSpec(100.0)
+    def send_waveform(self, data, duration, freq, rate, channels, gain, start_time=None):
+        print("start_time:", None if start_time is None else start_time.get_real_secs())
+
+uhd.usrp.MultiUSRP = FakeMultiUSRP
+args = types.SimpleNamespace(args="", wave_freq=1000.0, rate=1e6, wave_ampl=0.3, duration=0.01,
+                             waveform="sine", freq=123e6, channels=[0], gain=0, tx_delay=TX_DELAY)
+tx_waveforms.multi_usrp_tx(args)
+'''
+
+@pytest.mark.parametrize('txDelay, expected', [(0.0, 'start_time: None'), (0.5, 'start_time: 100.5')])
+def test_tx_waveforms_start_time(txDelay, expected):
+    # --tx-delay 0 starts immediately (start_time None); otherwise a timed start txDelay from now
+    txPython = os.environ.get('PTONE_TX_PYTHON')
+    if not txPython:
+        pytest.skip("Set PTONE_TX_PYTHON to a Python interpreter with UHD to run this test")
+    scriptDir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    code = START_TIME_CHECK.replace('SCRIPT_DIR', repr(scriptDir)).replace('TX_DELAY', repr(txDelay))
+    result = subprocess.run([txPython, '-c', code], capture_output=True, text=True, timeout=60)
+    assert result.returncode == 0, result.stderr
+    assert expected in result.stdout
