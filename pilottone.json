@@ -25,6 +25,15 @@
         ],
         "dontSkipFlags": [
             "ACQ_IS_PARALLEL_CALIBRATION_AND_IMAGING"
+        ],
+        "ptoneTxFreqSkipFlags": [
+            "ACQ_IS_NOISE_MEASUREMENT",
+            "ACQ_IS_NAVIGATION_DATA",
+            "ACQ_IS_RTFEEDBACK_DATA",
+            "ACQ_IS_HPFEEDBACK_DATA",
+            "ACQ_IS_SURFACECOILCORRECTIONSCAN_DATA",
+            "ACQ_IS_PHASE_STABILIZATION",
+            "ACQ_IS_PHASE_STABILIZATION_REFERENCE"
         ]
     }
 }

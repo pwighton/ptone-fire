@@ -56,6 +56,20 @@ defaultDontSkipFlags = [
     'ACQ_IS_PARALLEL_CALIBRATION_AND_IMAGING',  # PATREFANDIMASCAN
 ]
 
+# Default for the ptoneTxFreqSkipFlags parameter in pilottone.json: lines that can't or wont' be used to calculate
+# the pilot tone frequency, and so start the transmitter, because their readout (dwell time, position)
+# may differ from the imaging readout.  E.g. the noise line has a 5 us dwell vs 9.8 us in the TSE data.
+# This is separate from skipFlags, which only decides which lines are analyzed
+defaultPtoneTxFreqSkipFlags = [
+    'ACQ_IS_NOISE_MEASUREMENT',
+    'ACQ_IS_NAVIGATION_DATA',
+    'ACQ_IS_RTFEEDBACK_DATA',
+    'ACQ_IS_HPFEEDBACK_DATA',
+    'ACQ_IS_SURFACECOILCORRECTIONSCAN_DATA',
+    'ACQ_IS_PHASE_STABILIZATION',
+    'ACQ_IS_PHASE_STABILIZATION_REFERENCE',
+]
+
 def get_flags_config_param(config, key, default):
     # Read a list of ISMRMRD flag names from the JSON config, as either a JSON list or a
     # comma-separated string, and convert them to flag values.  Unknown names raise an error
@@ -138,11 +152,11 @@ def process(connection, config, mrdHeader):
     gitCommit = get_git_commit()
     logging.info("Git commit: %s", gitCommit)
 
-    # The pilot tone transmitter is enabled when the first k-space line is received, so lines
-    # within ptoneTxDelayMs of the first line are skipped while it starts up
+    # The pilot tone transmitter is started by the first line the frequency can be calculated from
+    # (see ptoneTxFreqSkipFlags), so lines within ptoneTxDelayMs of that line are skipped while it starts up
     ptoneTxDelayMs = mrdhelper.get_json_config_param(config, 'ptoneTxDelayMs', default=0, type='float')
-    firstTimeMs  = None
-    logging.info("Skipping lines within %g ms of the first line", ptoneTxDelayMs)
+    txStartTimeMs  = None  # Scanner time of the line that started the transmitter
+    logging.info("Skipping lines within %g ms of the line that starts the transmitter", ptoneTxDelayMs)
 
     # Reference channel for relative phase and amplitude (phase_ref_chan_idx in fast_phase_avg.py)
     refChanIdx = mrdhelper.get_json_config_param(config, 'refChanIdx', default=0, type='int')
@@ -174,6 +188,11 @@ def process(connection, config, mrdHeader):
         settings['skipFlags']     = skipFlagNames
         settings['dontSkipFlags'] = dontSkipFlagNames
 
+        # Lines that can't be used to calculate the pilot tone frequency and start the transmitter
+        ptoneTxFreqSkipFlags, ptoneTxFreqSkipFlagNames = get_flags_config_param(config, 'ptoneTxFreqSkipFlags', defaultPtoneTxFreqSkipFlags)
+        logging.info("Not starting the transmitter on lines with flags: %s", ', '.join(ptoneTxFreqSkipFlagNames))
+        settings['ptoneTxFreqSkipFlags'] = ptoneTxFreqSkipFlagNames
+
         # Pilot tone transmitter.  The frequency to broadcast (ptoneTxFreqHz) is ptoneTxOverrideFreqHz if
         # set, otherwise it's calculated by ptone_tx_frequency() from ptoneTxBandPosition and ptoneTxSide.
         # The calculation needs the first imaging line, so ptoneTxFreqHz is set when that arrives
@@ -189,10 +208,6 @@ def process(connection, config, mrdHeader):
         ptoneTxLogPath      = os.path.splitext(outputFilePath)[0] + '--usrp.txt'  # Output of tx_waveforms.py
         check_band_position_and_side(ptoneTxBandPosition, ptoneTxSide)
         ptoneTxFreqHz = None
-
-        # ptoneTxFreqHz is no longer a config parameter, so warn if an older config still sets it
-        if isinstance(config, dict) and 'ptoneTxFreqHz' in config.get('parameters', {}):
-            logging.warning("Ignoring 'ptoneTxFreqHz' in config.  Use 'ptoneTxOverrideFreqHz' to set a fixed frequency")
 
         if not ptoneTx:
             logging.info("Pilot tone transmitter: off")
@@ -211,6 +226,8 @@ def process(connection, config, mrdHeader):
         settings['ptoneTxMaxDurationS']   = ptoneTxMaxDurationS
         settings['ptoneTxStarted']        = False          # Updated when transmission starts
         settings['ptoneTxExitCode']       = None           # Set if the transmitter stops before the scan ends
+        settings['ptoneTxStartScanCounter'] = None         # Line that started the transmitter (scan_counter)
+        settings['ptoneTxStartTimeMs']      = None         # Its scanner timestamp (ms since midnight)
 
         for item in connection:
             if item is None:
@@ -219,17 +236,17 @@ def process(connection, config, mrdHeader):
             if not isinstance(item, ismrmrd.Acquisition):
                 continue
 
-            # Skip non-imaging lines
-            if not is_image_line(item, skipFlags, dontSkipFlags):
-                continue
-
-            # Skip lines until the pilot tone is on.  Timestamps are 2.5 ms ticks since midnight,
-            # so take the difference modulo one day in case the scan crosses midnight
+            # Timestamps are 2.5 ms ticks since midnight
             timeMs = item.acquisition_time_stamp * 2.5
-            if firstTimeMs is None:
-                firstTimeMs = timeMs
 
-                # Frequency to broadcast, from the first imaging line
+            # The first line the pilot tone frequency can be calculated from starts the transmitter.
+            # This happens whether or not the line is analyzed
+            if (txStartTimeMs is None) and not any(item.is_flag_set(flag) for flag in ptoneTxFreqSkipFlags):
+                txStartTimeMs = timeMs
+                settings['ptoneTxStartScanCounter'] = item.scan_counter
+                settings['ptoneTxStartTimeMs']      = timeMs
+                logging.info("Pilot tone frequency and transmitter start from line scan_counter %d", item.scan_counter)
+
                 if ptoneTxOverrideFreqHz is not None:
                     ptoneTxFreqHz = ptoneTxOverrideFreqHz
                 else:
@@ -255,7 +272,17 @@ def process(connection, config, mrdHeader):
                         except Exception as e:
                             transmitter = None
                             logging.error("Pilot tone transmitter failed to start: %s", e)
-            if (timeMs - firstTimeMs) % (24*60*60*1000) < ptoneTxDelayMs:
+
+            # Skip lines we don't want to analyze
+            if not is_image_line(item, skipFlags, dontSkipFlags):
+                continue
+
+            # Skip lines until the pilot tone is on: before the transmitter has started, and within
+            # ptoneTxDelayMs of it starting.  The difference is taken modulo one day in case the scan
+            # crosses midnight
+            if txStartTimeMs is None:
+                continue
+            if (timeMs - txStartTimeMs) % (24*60*60*1000) < ptoneTxDelayMs:
                 continue
 
             # Skip lines whose channel count differs from the line the phase midpoint was set from
