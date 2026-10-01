@@ -28,6 +28,7 @@ def estimate_ptone_params_initial_np_linalg_svd(scan_data, filter_img_data=True)
         scan_data = img_band_stop(scan_data)
     num_samp, num_chan = scan_data.shape
     # parameters per channel (amplitude, phase, frequency)
+    # We are not estimating frequency to save time
     param_est = np.zeros((3,num_chan))
     u, s, vh = np.linalg.svd(scan_data)
     quality = s[0]/np.sum(s)
@@ -37,7 +38,6 @@ def estimate_ptone_params_initial_np_linalg_svd(scan_data, filter_img_data=True)
     param_est[0,:] = np.abs(vh_prime)    
     # Phase
     param_est[1,:] = np.angle(vh_prime)
-    # todo: compute error estimate as the first singular value divided by the sum of the singular values
     return param_est, quality
 
 def process(connection, config, mrdHeader):
