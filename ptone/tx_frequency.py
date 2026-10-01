@@ -3,8 +3,8 @@
 # The readout (with oversampling) covers f0 +/- 1/(2*dwell).  The imaging band (the reconstructed
 # FOV) is the central part of that, f0 +/- reconFOV/encodedFOV * 1/(2*dwell).  The pilot tone is
 # placed bandPosition of the way from the edge of the imaging band to the edge of the readout band,
-# on the high-frequency side.  With 2x readout oversampling and bandPosition = 0.5 (halfway) this is
-# f0 + 0.75 * baseResolution * bandwidthPerPixel.
+# on the high- or low-frequency side.  With 2x readout oversampling and bandPosition = 0.5 (halfway)
+# this is f0 +/- 0.75 * baseResolution * bandwidthPerPixel.
 #
 # The scanner shifts its receive frequency to move the FOV along the readout direction, so a tone
 # at a fixed frequency appears at (txFrequency - f0 - fovShift) in the readout.  The fovShift is
@@ -37,11 +37,18 @@ def readout_frequencies(mrdHeader, acq):
         'fovShiftHz':        readoutOffsetMm * hzPerMm,
     }
 
-def ptone_tx_frequency(mrdHeader, acq, bandPosition=0.5):
+def ptone_tx_frequency(mrdHeader, acq, bandPosition=0.5, side='high'):
     # Transmit frequency (Hz) that places the pilot tone bandPosition of the way from the edge of
-    # the imaging band (0) to the edge of the readout band (1)
+    # the imaging band (0) to the edge of the readout band (1), on the high or low frequency side
+    if not 0 <= bandPosition <= 1:
+        raise ValueError("bandPosition must be between 0 and 1 (got %s); use side='low' for the low-frequency side" % bandPosition)
+    if side not in ('high', 'low'):
+        raise ValueError("side must be 'high' or 'low' (got %r)" % (side,))
+
     r = readout_frequencies(mrdHeader, acq)
     toneOffsetHz = r['imagingHalfBandHz'] + bandPosition * (r['readoutHalfBandHz'] - r['imagingHalfBandHz'])
+    if side == 'low':
+        toneOffsetHz = -toneOffsetHz
     return r['f0Hz'] + toneOffsetHz + r['fovShiftHz']
 
 def ptone_readout_offset(txFrequencyHz, mrdHeader, acq):

@@ -63,13 +63,43 @@ def test_readout_offset_uses_read_dir():
     acq.position = (5.0, 30.0, -70.0)
     assert readout_frequencies(make_header(), acq)['readoutOffsetMm'] == pytest.approx(5.0)
 
+@pytest.mark.parametrize('side, sign', [('high', 1), ('low', -1)])
 @pytest.mark.parametrize('readoutOffsetMm', [-25.0, 0.0, 22.27])
-def test_tone_lands_halfway_regardless_of_fov_shift(readoutOffsetMm):
+def test_tone_lands_halfway_regardless_of_fov_shift(readoutOffsetMm, side, sign):
     # ptone_readout_offset is the inverse of ptone_tx_frequency: the tone always appears halfway
-    # between the imaging band edge and the readout band edge
+    # between the imaging band edge and the readout band edge, on the requested side
     hdr, acq = make_header(), make_acq(readoutOffsetMm=readoutOffsetMm)
     halfway = 0.75 / (2 * 9.8e-6)
-    assert ptone_readout_offset(ptone_tx_frequency(hdr, acq), hdr, acq) == pytest.approx(halfway)
+    assert ptone_readout_offset(ptone_tx_frequency(hdr, acq, side=side), hdr, acq) == pytest.approx(sign * halfway)
+
+@pytest.mark.parametrize('bandPosition', [0, 0.25, 0.5, 1])
+@pytest.mark.parametrize('readoutOffsetMm', [-8.37, 0.0, 22.27])
+def test_low_side_mirrors_high_side_about_fov_centre(bandPosition, readoutOffsetMm):
+    # The low and high side frequencies are symmetric about the centre of the (shifted) FOV
+    hdr, acq = make_header(), make_acq(readoutOffsetMm=readoutOffsetMm)
+    r = readout_frequencies(hdr, acq)
+    fovCentreHz = r['f0Hz'] + r['fovShiftHz']
+    high = ptone_tx_frequency(hdr, acq, bandPosition=bandPosition, side='high')
+    low  = ptone_tx_frequency(hdr, acq, bandPosition=bandPosition, side='low')
+    assert (high - fovCentreHz) == pytest.approx(fovCentreHz - low)
+    assert low < fovCentreHz < high
+
+def test_low_side_matches_kstream_formula_without_fov_shift():
+    # With 2x oversampling and no FOV shift: f0 - 0.75 * baseResolution * bandwidthPerPixel
+    hdr, acq = make_header(), make_acq()
+    bwPerPixel = 1 / (512 * 9.8e-6)
+    assert ptone_tx_frequency(hdr, acq, side='low') == pytest.approx(123_248_104 - 0.75 * 256 * bwPerPixel)
+
+@pytest.mark.parametrize('bandPosition', [-0.5, -0.01, 1.01, 2])
+def test_band_position_outside_0_to_1_is_rejected(bandPosition):
+    # Values outside 0-1 would put the tone in the imaging band or outside the readout band
+    with pytest.raises(ValueError, match='bandPosition'):
+        ptone_tx_frequency(make_header(), make_acq(), bandPosition=bandPosition)
+
+@pytest.mark.parametrize('side', ['HIGH', 'lo', '', None])
+def test_unknown_side_is_rejected(side):
+    with pytest.raises(ValueError, match='side'):
+        ptone_tx_frequency(make_header(), make_acq(), side=side)
 
 # ----- Real datasets --------------------------------------------------------------------------
 
