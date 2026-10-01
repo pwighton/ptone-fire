@@ -1,10 +1,15 @@
 {
     "version": "0.0.1",
     "parameters": {
-        "ptoneTxDelayMs": "0",
-        "refChanIdx": "0",
         "outputFolder": "/home/paul/lcn/projects/pt-fire/ismrmrd-server-output",
         "outputFileStem": "pilottone",
+        "ptoneTxDelayMs": "0",
+        "ptoneTx": "false",
+        "ptoneTxBandPosition": "0.5",
+        "ptoneTxSide": "high",
+        "ptoneTxOverrideFreqHz": "",
+        "ptoneTxDB": "70",
+        "refChanIdx": "0",
         "skipFlags": [
             "ACQ_IS_RTFEEDBACK_DATA", 
             "ACQ_IS_HPFEEDBACK_DATA", 

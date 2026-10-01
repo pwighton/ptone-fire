@@ -8,6 +8,7 @@ import subprocess
 import numpy as np
 import mrdhelper
 from ptone.estimate import analyze_line
+from ptone.tx_frequency import check_band_position_and_side, ptone_tx_frequency
 
 import sys
 import traceback
@@ -18,6 +19,12 @@ from datetime import datetime
 # <outputFolder>/<outputFileStem>--<protocolName>--<YYYYMMDD-HHMMSS-mmm>.npz, timestamped when processing starts
 defaultOutputFolder   = "/tmp/ismrmrd-server-output--pilottone"
 defaultOutputFileStem = "pilottone"
+
+# Defaults for the pilot tone transmitter parameters in pilottone.json
+defaultPtoneTx             = False   # Don't transmit unless the config asks for it
+defaultPtoneTxBandPosition = 0.5     # bandPosition in ptone_tx_frequency(): halfway between imaging and readout band edges
+defaultPtoneTxSide         = 'high'  # side in ptone_tx_frequency()
+defaultPtoneTxDB           = 70      # Transmit gain (dB), as in kstream's prot/aria scripts
 
 # Defaults for the skipFlags and dontSkipFlags parameters in pilottone.json.  These are the equivalent
 # of is_image_scan() in kstream's twixtools_mdh.py, using ISMRMRD flags.
@@ -159,6 +166,35 @@ def process(connection, config, mrdHeader):
         settings['skipFlags']     = skipFlagNames
         settings['dontSkipFlags'] = dontSkipFlagNames
 
+        # Pilot tone transmitter.  The frequency to broadcast (ptoneTxFreqHz) is ptoneTxOverrideFreqHz if
+        # set, otherwise it's calculated by ptone_tx_frequency() from ptoneTxBandPosition and ptoneTxSide.
+        # The calculation needs the first imaging line, so ptoneTxFreqHz is set when that arrives
+        ptoneTx             = mrdhelper.get_json_config_param(config, 'ptoneTx',             default=defaultPtoneTx,             type='bool')
+        ptoneTxBandPosition = mrdhelper.get_json_config_param(config, 'ptoneTxBandPosition', default=defaultPtoneTxBandPosition, type='float')
+        ptoneTxSide         = mrdhelper.get_json_config_param(config, 'ptoneTxSide',         default=defaultPtoneTxSide,         type='str')
+        ptoneTxDB           = mrdhelper.get_json_config_param(config, 'ptoneTxDB',           default=defaultPtoneTxDB,           type='float')
+        ptoneTxOverrideFreqHz = mrdhelper.get_json_config_param(config, 'ptoneTxOverrideFreqHz', default='', type='str')
+        ptoneTxOverrideFreqHz = float(ptoneTxOverrideFreqHz) if ptoneTxOverrideFreqHz.strip() != '' else None
+        check_band_position_and_side(ptoneTxBandPosition, ptoneTxSide)
+        ptoneTxFreqHz = None
+
+        # ptoneTxFreqHz is no longer a config parameter, so warn if an older config still sets it
+        if isinstance(config, dict) and 'ptoneTxFreqHz' in config.get('parameters', {}):
+            logging.warning("Ignoring 'ptoneTxFreqHz' in config.  Use 'ptoneTxOverrideFreqHz' to set a fixed frequency")
+
+        if not ptoneTx:
+            logging.info("Pilot tone transmitter: off")
+        elif ptoneTxOverrideFreqHz is not None:
+            logging.info("Pilot tone transmitter: on, %.0f Hz (set by ptoneTxOverrideFreqHz), %g dB", ptoneTxOverrideFreqHz, ptoneTxDB)
+        else:
+            logging.info("Pilot tone transmitter: on, frequency calculated with bandPosition %g, side '%s', %g dB", ptoneTxBandPosition, ptoneTxSide, ptoneTxDB)
+        settings['ptoneTx']             = ptoneTx
+        settings['ptoneTxBandPosition'] = ptoneTxBandPosition
+        settings['ptoneTxSide']         = ptoneTxSide
+        settings['ptoneTxDB']           = ptoneTxDB
+        settings['ptoneTxOverrideFreqHz'] = ptoneTxOverrideFreqHz
+        settings['ptoneTxFreqHz']         = ptoneTxFreqHz  # Updated at the first imaging line
+
         for item in connection:
             if item is None:
                 break
@@ -175,6 +211,18 @@ def process(connection, config, mrdHeader):
             timeMs = item.acquisition_time_stamp * 2.5
             if firstTimeMs is None:
                 firstTimeMs = timeMs
+
+                # Frequency to broadcast, from the first imaging line
+                if ptoneTxOverrideFreqHz is not None:
+                    ptoneTxFreqHz = ptoneTxOverrideFreqHz
+                else:
+                    try:
+                        ptoneTxFreqHz = ptone_tx_frequency(mrdHeader, item, bandPosition=ptoneTxBandPosition, side=ptoneTxSide)
+                    except Exception as e:
+                        logging.warning("Could not calculate the pilot tone frequency: %s", e)
+                if ptoneTxFreqHz is not None:
+                    logging.info("Pilot tone frequency: %.0f Hz%s", ptoneTxFreqHz, "" if ptoneTx else " (not transmitted, ptoneTx is false)")
+                settings['ptoneTxFreqHz'] = ptoneTxFreqHz
             if (timeMs - firstTimeMs) % (24*60*60*1000) < ptoneTxDelayMs:
                 continue
 

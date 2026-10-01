@@ -37,13 +37,17 @@ def readout_frequencies(mrdHeader, acq):
         'fovShiftHz':        readoutOffsetMm * hzPerMm,
     }
 
-def ptone_tx_frequency(mrdHeader, acq, bandPosition=0.5, side='high'):
-    # Transmit frequency (Hz) that places the pilot tone bandPosition of the way from the edge of
-    # the imaging band (0) to the edge of the readout band (1), on the high or low frequency side
+def check_band_position_and_side(bandPosition, side):
+    # Raise ValueError if bandPosition or side aren't valid for ptone_tx_frequency()
     if not 0 <= bandPosition <= 1:
         raise ValueError("bandPosition must be between 0 and 1 (got %s); use side='low' for the low-frequency side" % bandPosition)
     if side not in ('high', 'low'):
         raise ValueError("side must be 'high' or 'low' (got %r)" % (side,))
+
+def ptone_tx_frequency(mrdHeader, acq, bandPosition=0.5, side='high'):
+    # Transmit frequency (Hz) that places the pilot tone bandPosition of the way from the edge of
+    # the imaging band (0) to the edge of the readout band (1), on the high or low frequency side
+    check_band_position_and_side(bandPosition, side)
 
     r = readout_frequencies(mrdHeader, acq)
     toneOffsetHz = r['imagingHalfBandHz'] + bandPosition * (r['readoutHalfBandHz'] - r['imagingHalfBandHz'])
