@@ -1,0 +1,18 @@
+# Installs the 'mrd-client' and 'mrd-server' commands (see mrd_commands.py).  Dependencies come from the
+# conda environment (environment.yml), which installs this repository in editable mode ('-e .'), so the
+# commands always run the code in this checkout.
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "python-ismrmrd-server"
+version = "0.0.0"
+requires-python = ">=3.10"
+
+[project.scripts]
+mrd-client = "mrd_commands:client"
+mrd-server = "mrd_commands:server"
+
+[tool.setuptools]
+py-modules = ["mrd_commands"]

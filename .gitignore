@@ -6,3 +6,5 @@
 *.tar
 *.zip
 data/
+# Created by "pip install -e ." (mrd-client and mrd-server commands)
+*.egg-info/
