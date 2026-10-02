@@ -169,10 +169,16 @@ def process(connection, config, mrdHeader):
     logging.info("Git commit: %s", gitCommit)
 
     # The pilot tone transmitter is started by the first line the frequency can be calculated from
-    # (see ptoneTxFreqSkipFlags), so lines within ptoneTxDelayMs of that line are skipped while it starts up
+    # (see ptoneTxFreqSkipFlags), so lines within ptoneTxDelayMs of that line are skipped while it starts up.
+    # A negative ptoneTxDelayMs (e.g. -1) turns this off: every line eligible under skipFlags is analysed,
+    # from the start of the scan, whether or not a line has started the transmitter.  For data where the
+    # pilot tone was already on (e.g. processing previously acquired data offline)
     ptoneTxDelayMs = mrdhelper.get_json_config_param(config, 'ptoneTxDelayMs', default=0, type='float')
     txStartTimeMs  = None  # Scanner time of the line that started the transmitter
-    logging.info("Skipping lines within %g ms of the line that starts the transmitter", ptoneTxDelayMs)
+    if ptoneTxDelayMs < 0:
+        logging.info("ptoneTxDelayMs is negative: analysing all eligible lines, without waiting for the transmitter")
+    else:
+        logging.info("Skipping lines within %g ms of the line that starts the transmitter", ptoneTxDelayMs)
 
     # Reference channel for relative phase and amplitude (phase_ref_chan_idx in fast_phase_avg.py)
     refChanIdx = mrdhelper.get_json_config_param(config, 'refChanIdx', default=0, type='int')
@@ -217,6 +223,8 @@ def process(connection, config, mrdHeader):
         # set, otherwise it's calculated by ptone_tx_frequency() from ptoneTxBandPosition and ptoneTxSide.
         # The calculation needs the first imaging line, so ptoneTxFreqHz is set when that arrives
         ptoneTx             = mrdhelper.get_json_config_param(config, 'ptoneTx',             default=defaultPtoneTx,             type='bool')
+        if ptoneTx and ptoneTxDelayMs < 0:
+            logging.warning("Transmitting with a negative ptoneTxDelayMs: lines before the pilot tone appears will be analysed too")
         ptoneTxBandPosition = mrdhelper.get_json_config_param(config, 'ptoneTxBandPosition', default=defaultPtoneTxBandPosition, type='float')
         ptoneTxSide         = mrdhelper.get_json_config_param(config, 'ptoneTxSide',         default=defaultPtoneTxSide,         type='str')
         ptoneTxDB           = mrdhelper.get_json_config_param(config, 'ptoneTxDB',           default=defaultPtoneTxDB,           type='float')
@@ -302,12 +310,13 @@ def process(connection, config, mrdHeader):
                 continue
 
             # Skip lines until the pilot tone is on: before the transmitter has started, and within
-            # ptoneTxDelayMs of it starting.  The difference is taken modulo one day in case the scan
-            # crosses midnight
-            if txStartTimeMs is None:
-                continue
-            if (timeMs - txStartTimeMs) % (24*60*60*1000) < ptoneTxDelayMs:
-                continue
+            # ptoneTxDelayMs of it starting (unless ptoneTxDelayMs is negative).  The difference is taken
+            # modulo one day in case the scan crosses midnight
+            if ptoneTxDelayMs >= 0:
+                if txStartTimeMs is None:
+                    continue
+                if (timeMs - txStartTimeMs) % (24*60*60*1000) < ptoneTxDelayMs:
+                    continue
 
             # Skip lines whose channel count differs from the line the phase midpoint was set from
             if (phaseMidpoint is not None) and (item.data.shape[0] != len(phaseMidpoint)):

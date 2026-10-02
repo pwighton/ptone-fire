@@ -70,3 +70,35 @@ def test_output_filename_has_mid(tmp_path):
 def test_output_filename_without_mid(tmp_path):
     files = run_process(tmp_path, None)
     assert all(f.startswith('sub01--MIDunknown-unknown--') for f in files)
+
+# ----- Negative ptoneTxDelayMs: analyse every eligible line ----------------------------------------
+
+def run_flagged(tmp_path, delayMs, numFlagged, numLines=6):
+    # Lines whose first numFlagged carry ACQ_IS_SURFACECOILCORRECTIONSCAN_DATA (as siemens_to_ismrmrd does for
+    # every MPRAGE line).  skipFlags doesn't skip that flag; ptoneTxFreqSkipFlags (default) does, so those lines
+    # can't start the transmitter.  Returns the scan_counters analysed (empty if no results were saved)
+    import ismrmrd
+    acqs = FakeConnection()
+    for i in range(numLines):
+        data = np.exp(2j * np.pi * 0.3 * np.arange(256))[None, :].repeat(4, 0) + 0.01 * np.random.randn(4, 256)
+        acq = ismrmrd.Acquisition.from_array(data.astype(np.complex64))
+        acq.scan_counter = i + 1
+        acq.acquisition_time_stamp = 4 * i
+        if i < numFlagged:
+            acq.set_flag(ismrmrd.ACQ_IS_SURFACECOILCORRECTIONSCAN_DATA)
+        acqs.append(acq)
+    pilottone.process(acqs, {'parameters': {'outputFolder': str(tmp_path), 'ptonePlot': 'false', 'ptoneTxDelayMs': str(delayMs),
+                                            'skipFlags': 'ACQ_IS_NOISE_MEASUREMENT'}}, None)
+    npz = [f for f in os.listdir(tmp_path) if f.endswith('.npz')]
+    return list(np.load(tmp_path / npz[0])['scan_counter']) if npz else []
+
+def test_all_lines_flagged_needs_negative_delay(tmp_path):
+    # Like the MPRAGE: no line can start the transmitter, so with delay 0 nothing is analysed ...
+    assert run_flagged(tmp_path / 'zero', 0, numFlagged=6) == []
+    # ... and with a negative delay every eligible line is
+    assert run_flagged(tmp_path / 'negative', -1, numFlagged=6) == [1, 2, 3, 4, 5, 6]
+
+def test_negative_delay_includes_lines_before_transmitter_start(tmp_path):
+    # The first 2 lines can't start the transmitter; line 3 does
+    assert run_flagged(tmp_path / 'zero', 0, numFlagged=2) == [3, 4, 5, 6]
+    assert run_flagged(tmp_path / 'negative', -1, numFlagged=2) == [1, 2, 3, 4, 5, 6]
