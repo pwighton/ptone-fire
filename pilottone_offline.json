@@ -13,7 +13,7 @@
         "refChanIdx": "0",
         "outputFolder": "/home/paul/lcn/projects/pt-fire/ismrmrd-server-output",
         "outputFileStem": "pilottone",
-        "ptonePlot": "true",
+        "ptonePlot": "false",
         "skipFlags": [
             "ACQ_IS_RTFEEDBACK_DATA", 
             "ACQ_IS_HPFEEDBACK_DATA", 

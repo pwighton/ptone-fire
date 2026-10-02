@@ -17,7 +17,7 @@ import time
 from datetime import datetime
 
 # Defaults for the outputFolder and outputFileStem parameters in pilottone.json.  Results are saved to
-# <outputFolder>/<outputFileStem>--<protocolName>--<YYYYMMDD-HHMMSS-mmm>.npz, timestamped when processing starts
+# <outputFolder>/<outputFileStem>--MID<nnnnn>-<protocolName>--<YYYYMMDD-HHMMSS-mmm>.npz, timestamped when processing starts
 defaultOutputFolder   = "/tmp/ismrmrd-server-output--pilottone"
 defaultOutputFileStem = "pilottone"
 
@@ -107,6 +107,15 @@ def get_protocol_name(mrdHeader):
         return 'unknown'
     return re.sub(r'[^A-Za-z0-9._-]', '_', protocolName)
 
+def get_mid(mrdHeader):
+    # Siemens measurement ID (MID) from the MRD header: the number at the end of measurementInformation.measurementID,
+    # e.g. 1104 from '45407_0000026092514332225800000049_0000026092514332225800000049_1104'.  None if not available
+    try:
+        mid = mrdHeader.measurementInformation.measurementID.rsplit('_', 1)[-1]
+    except AttributeError:
+        return None
+    return int(mid) if mid.isdigit() else None
+
 def mrd_header_to_xml(mrdHeader):
     # MRD header as XML text for saving.  The server passes the header as text if it isn't valid MRD XML
     if isinstance(mrdHeader, ismrmrd.xsd.ismrmrdHeader):
@@ -138,7 +147,9 @@ def process(connection, config, mrdHeader):
     now            = datetime.now()
     timestamp      = now.strftime('%Y%m%d-%H%M%S') + '-%03d' % (now.microsecond // 1000)  # YYYYMMDD-HHMMSS-mmm
     protocolName   = get_protocol_name(mrdHeader)
-    outputFilePath = os.path.join(outputFolder, outputFileStem + '--' + protocolName + '--' + timestamp + '.npz')
+    mid            = get_mid(mrdHeader)
+    midLabel       = 'MID%05d' % mid if mid is not None else 'MIDunknown'   # As in Siemens raw data filenames
+    outputFilePath = os.path.join(outputFolder, outputFileStem + '--' + midLabel + '-' + protocolName + '--' + timestamp + '.npz')
 
     # Also write this scan's log messages to a .txt file alongside the results.  Only messages from
     # this thread are included, in case the server is handling other connections at the same time
