@@ -343,11 +343,17 @@ def process(connection, config, mrdHeader):
         if plot:
             start_plot(npzPath, logFilePath)
 
+# Plot processes started by start_plot().  Keeping them avoids a ResourceWarning when a still-running
+# process's Popen object is discarded, and lets finished ones be cleaned up (reaped) at the next scan
+plotProcesses = []
+
 def start_plot(npzPath, logFilePath):
     # Start ptone/ptone_plot.py on the results file without waiting for it
+    plotProcesses[:] = [p for p in plotProcesses if p.poll() is None]
     try:
         with open(logFilePath, 'a') as logFile:
-            subprocess.Popen([sys.executable, ptonePlotScript, npzPath], stdout=logFile, stderr=subprocess.STDOUT)
+            plotProcesses.append(subprocess.Popen([sys.executable, ptonePlotScript, npzPath],
+                                                  stdout=logFile, stderr=subprocess.STDOUT))
     except Exception as e:
         logging.error("Could not start plotting %s: %s", npzPath, e)
 
