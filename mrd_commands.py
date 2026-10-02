@@ -3,7 +3,7 @@
 # would: as __main__, with this repository first on the module search path, so the server can still load
 # configs such as pilottone.py.
 #
-# Note: mrd-client still looks for <config>.json in the current directory, as client.py does.
+# mrd-client looks for <config>.json in the current directory, then in this repository (see client.py).
 
 import os
 import runpy

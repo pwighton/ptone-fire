@@ -111,7 +111,11 @@ def main(args):
 
     localConfigAdditionalText = None
     if (args.config) and (not args.config_local):
-        configAdditionalFile = args.config + '.json'
+        # Look for <config>.json in the current directory, then in this script's directory (so it's found
+        # when the client is run from elsewhere, e.g. as mrd-client)
+        configAdditionalFile = os.path.abspath(args.config + '.json')
+        if not os.path.exists(configAdditionalFile):
+            configAdditionalFile = os.path.join(os.path.dirname(os.path.abspath(__file__)), args.config + '.json')
         if os.path.exists(configAdditionalFile):
             logging.info("Found additional config file %s", configAdditionalFile)
 
