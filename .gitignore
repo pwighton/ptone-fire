@@ -8,3 +8,6 @@
 data/
 # Created by "pip install -e ." (mrd-client and mrd-server commands)
 *.egg-info/
+# MRI data: MRD (.h5) and Siemens raw data (.dat)
+*.h5
+*.dat
