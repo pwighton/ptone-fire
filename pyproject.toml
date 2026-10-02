@@ -1,6 +1,6 @@
-# Installs the 'mrd-client' and 'mrd-server' commands (see mrd_commands.py).  Dependencies come from the
-# conda environment (environment.yml), which installs this repository in editable mode ('-e .'), so the
-# commands always run the code in this checkout.
+# Installs the 'mrd-client', 'mrd-server' and 'ptone-offline-batch' commands (see mrd_commands.py).
+# Dependencies come from the conda environment (environment.yml), which installs this repository in
+# editable mode ('-e .'), so the commands always run the code in this checkout.
 [build-system]
 requires = ["setuptools>=61"]
 build-backend = "setuptools.build_meta"
@@ -13,6 +13,7 @@ requires-python = ">=3.10"
 [project.scripts]
 mrd-client = "mrd_commands:client"
 mrd-server = "mrd_commands:server"
+ptone-offline-batch = "mrd_commands:ptone_offline_batch"
 
 [tool.setuptools]
 py-modules = ["mrd_commands"]
