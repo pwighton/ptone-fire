@@ -31,8 +31,19 @@ defaults = {
     'verbose':            False,
     'logfile':            '',
     'quiet':              False,
-    'mrd2gif':            False
+    'mrd2gif':            False,
+    'set':                [],
 }
+
+def apply_config_overrides(configText, overrides):
+    # Set parameters in the additional config (JSON text, or None if there isn't one) from --set KEY=VALUE.
+    # Returns the new JSON text
+    config = json.loads(configText) if configText is not None else {}
+    parameters = config.setdefault('parameters', {})
+    for key, value in overrides.items():
+        logging.info("Overriding config parameter '%s': %r -> %r", key, parameters.get(key), value)
+        parameters[key] = value
+    return json.dumps(config, indent=2)
 
 def connection_receive_loop(sock, outfile, outgroup, verbose, logfile, quiet, fixTransposed, recvAcqs, recvImages, recvWaveforms):
     """Start a Connection instance to receive data, generally run in a separate thread"""
@@ -92,6 +103,15 @@ def main(args):
         logging.root.setLevel(logging.DEBUG)
     else:
         logging.root.setLevel(logging.INFO)
+
+    # Overrides for parameters in the additional config (JSON), from --set KEY=VALUE
+    configOverrides = {}
+    for item in args.set:
+        if '=' not in item:
+            logging.error("--set must be KEY=VALUE (got '%s')", item)
+            return
+        key, value = item.split('=', 1)
+        configOverrides[key] = value
 
     # Use an output filename based on the input file if not provided
     if args.outfile is None:
@@ -293,7 +313,14 @@ def main(args):
 
                         configAdditionalText = json.dumps(configAdditional, indent=2)
 
+                if configOverrides:
+                    configAdditionalText = apply_config_overrides(configAdditionalText, configOverrides)
                 logging.info("Sending configAdditional found in file %s:\n%s", args.filename, configAdditionalText)
+                connection.send_text(configAdditionalText)
+            elif configOverrides:
+                # No additional config in local .json file or in MRD file, so send just the overrides
+                configAdditionalText = apply_config_overrides(None, configOverrides)
+                logging.info("Sending configAdditional from --set:\n%s", configAdditionalText)
                 connection.send_text(configAdditionalText)
             else:
                 # Do nothing -- no additional config in local .json file or in MRD file
@@ -317,6 +344,8 @@ def main(args):
 
                     localConfigAdditionalText = json.dumps(localConfigAdditional, indent=2)
 
+            if configOverrides:
+                localConfigAdditionalText = apply_config_overrides(localConfigAdditionalText, configOverrides)
             logging.info("Sending configAdditional found in file %s:\n%s", configAdditionalFile, localConfigAdditionalText)
             connection.send_text(localConfigAdditionalText)
 
@@ -430,6 +459,9 @@ if __name__ == '__main__':
     parser.add_argument('-q', '--quiet',              action='store_true', help='Suppress stdout logging')
     parser.add_argument(      '--ignore-json-config', action='store_true', help='Ignore config specified in JSON')
     parser.add_argument(      '--mrd2gif',            action='store_true', help='Run mrd2gif on output file')
+    parser.add_argument(      '--set',                action='append',     metavar='KEY=VALUE',
+                        help='Set a parameter in the additional config (JSON) sent to the server, overriding the '
+                             'value in the .json file, e.g. --set outputFileStem=sub01.  Can be given more than once')
 
     parser.set_defaults(**defaults)
 
