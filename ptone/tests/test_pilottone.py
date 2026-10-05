@@ -102,3 +102,48 @@ def test_negative_delay_includes_lines_before_transmitter_start(tmp_path):
     # The first 2 lines can't start the transmitter; line 3 does
     assert run_flagged(tmp_path / 'zero', 0, numFlagged=2) == [3, 4, 5, 6]
     assert run_flagged(tmp_path / 'negative', -1, numFlagged=2) == [1, 2, 3, 4, 5, 6]
+
+# ----- Phase range midpoint ----------------------------------------------------------------------
+
+def run_noise_then_tone(tmp_path, numNoise=4, numTone=20, threshold=None):
+    # numNoise lines of noise only (no tone: low quality), then numTone lines with a tone whose phase on
+    # channel 2 drifts from 3.0 to 3.5 rad relative to channel 0.  Returns the saved results
+    import ismrmrd, json
+    rng = np.random.default_rng(3)
+    acqs = FakeConnection()
+    n = np.arange(256)
+    for i in range(numNoise + numTone):
+        noise = 0.01 * (rng.standard_normal((4, 256)) + 1j * rng.standard_normal((4, 256)))
+        if i < numNoise:
+            data = noise
+        else:
+            phases = np.array([0.0, 1.0, 3.0 + 0.5 * (i - numNoise) / numTone, -2.0])
+            data = np.exp(1j * phases)[:, None] * np.exp(2j * np.pi * 0.3 * n)[None, :] + noise
+        acq = ismrmrd.Acquisition.from_array(data.astype(np.complex64))
+        acq.scan_counter = i + 1
+        acq.acquisition_time_stamp = 4 * i
+        acqs.append(acq)
+    params = {'outputFolder': str(tmp_path), 'ptonePlot': 'false', 'ptoneTxDelayMs': '-1',
+              'skipFlags': 'ACQ_IS_NOISE_MEASUREMENT'}
+    if threshold is not None:
+        params['ptoneQualityThreshold'] = str(threshold)
+    pilottone.process(acqs, {'parameters': params}, None)
+    npz = [f for f in os.listdir(tmp_path) if f.endswith('.npz')][0]
+    d = np.load(tmp_path / npz)
+    return d, json.loads(str(d['settings']))
+
+def test_midpoint_from_first_line_with_tone(tmp_path):
+    d, settings = run_noise_then_tone(tmp_path)
+    q = d['quality']
+    assert np.all(q[:4] < 0.5) and np.all(q[4:] > 0.9)          # Noise lines vs tone lines
+    assert settings['ptoneQualityThreshold'] == 0.5
+    assert settings['phaseMidpointScanCounter'] == 5            # The first tone line
+    # Tone lines: relative phase centred on the first tone line's value, continuous (no 2*pi jumps)
+    ph = d['relative_phase'][4:, 2]
+    assert np.allclose(ph, 3.0 + 0.5 * np.arange(20) / 20, atol=0.05)
+
+def test_midpoint_quality_threshold_zero_uses_first_line(tmp_path):
+    # ptoneQualityThreshold 0: the midpoint comes from the first analysed line, even without the tone
+    d, settings = run_noise_then_tone(tmp_path, threshold=0)
+    assert settings['ptoneQualityThreshold'] == 0
+    assert settings['phaseMidpointScanCounter'] == 1

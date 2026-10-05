@@ -33,6 +33,12 @@ defaultPtoneTxDeviceArgs   = ''      # UHD device arguments (tx_waveforms.py --a
 # (<results>.png, made by ptone/ptone_plot.py in a separate process)
 defaultPtonePlot = True
 ptonePlotScript  = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'ptone', 'ptone_plot.py')
+
+# Default for ptoneQualityThreshold in pilottone.json: lines whose quality (from the SVD in ptone/estimate.py:
+# the share of the line's filtered signal in its strongest component, i.e. the tone) is at least this have
+# the tone present.  Without the tone it's around 0.05; with it, above about 0.9
+defaultPtoneQualityThreshold = 0.5
+
 # Python that runs ptone/tx_waveforms.py.  It needs UHD, which can't be installed in this environment
 # (see ptone/environment-tx.yml), so default to the 'ptone-tx' conda environment alongside this one
 defaultPtoneTxPython       = os.path.join(os.path.dirname(sys.prefix), 'ptone-tx', 'bin', 'python')
@@ -184,8 +190,14 @@ def process(connection, config, mrdHeader):
     refChanIdx = mrdhelper.get_json_config_param(config, 'refChanIdx', default=0, type='int')
     logging.info("Using channel %d as the reference channel", refChanIdx)
 
-    # Per-channel midpoint of the phase range, set from the first line after ptoneTxDelayMs.
-    # Keeping phases within [midpoint - pi, midpoint + pi] minimizes phase wraps across the scan
+    # Per-channel midpoint of the phase range, set from the first analysed line whose quality is at least
+    # ptoneQualityThreshold, i.e. once the tone is present.  Keeping phases within [midpoint - pi, midpoint + pi]
+    # minimizes phase wraps across the scan.  A midpoint set from a line without the tone would be random,
+    # leaving some channels near the edge of their range, where even small changes wrap.  Lines before
+    # the midpoint is set have their relative phase in [0, 2pi]
+    ptoneQualityThreshold = mrdhelper.get_json_config_param(config, 'ptoneQualityThreshold',
+                                                            default=defaultPtoneQualityThreshold, type='float')
+    logging.info("Setting the phase range midpoint from the first line with quality >= %g", ptoneQualityThreshold)
     phaseMidpoint = None
 
     numChanMismatch = 0  # Lines skipped because their channel count differs from the first analyzed line
@@ -203,6 +215,8 @@ def process(connection, config, mrdHeader):
         'outputFileStem': outputFileStem,
         'ptoneTxDelayMs': ptoneTxDelayMs,
         'refChanIdx':     refChanIdx,
+        'ptoneQualityThreshold':    ptoneQualityThreshold,
+        'phaseMidpointScanCounter': None,   # Line the phase range midpoint was set from (scan_counter)
     }
 
     try:
@@ -329,9 +343,11 @@ def process(connection, config, mrdHeader):
             result = analyze_line(item, refChanIdx, phaseMidpoint)
             results.append(result)
 
-            if phaseMidpoint is None:
+            if phaseMidpoint is None and result['quality'] >= ptoneQualityThreshold:
                 phaseMidpoint = result['relative_phase']
-                logging.info("Setting phase range midpoint to %s", phaseMidpoint)
+                settings['phaseMidpointScanCounter'] = int(item.scan_counter)
+                logging.info("Setting phase range midpoint from line scan_counter %d (quality %.3f) to %s",
+                             item.scan_counter, result['quality'], phaseMidpoint)
 
     except Exception:
         # Logged here rather than left to the server, so the traceback is also in the log file

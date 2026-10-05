@@ -11,6 +11,7 @@
         "ptoneTxPython": "/home/paul/miniconda3/envs/ptone-tx/bin/python",
         "ptoneTxDeviceArgs": "type=b200,master_clock_rate=32e6",
         "refChanIdx": "0",
+        "ptoneQualityThreshold": "0.5",
         "outputFolder": "/home/paul/lcn/projects/pt-fire/ismrmrd-server-output",
         "outputFileStem": "pilottone",
         "ptonePlot": "true",
