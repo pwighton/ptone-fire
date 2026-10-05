@@ -1,14 +1,19 @@
 #!/usr/bin/env python3
 # Plot the pilot tone results saved by pilottone.py: for each channel, amplitude and phase against the
-# scanner's line number, with the quality metric and optionally TCL head motion overlaid.
+# scanner's line number, with the quality metric and optionally TCL head motion overlaid: from a motion
+# file (--tcl), or from the TCL data saved in the results file, if it has any.
+#
+# --tcl MOTFILE --add-tcl also saves the motion, matched to each line, into the results file (see
+# ptone/tcl.py add_tcl_to_npz), e.g. to add tracker data to a scan pilottone.py plotted at the scanner.
+# Later plots of that file then show the motion without --tcl.
 #
 # Modelled on kstream's kstream/fast_phase_inspect.py (gen_plot).
 #
 # Command line:
-#   python ptone/ptone_plot.py results.npz [--tcl MOTFILE] [--channel N ...] [--plot both|amplitude|phase] ...
+#   python ptone/ptone_plot.py results.npz [--tcl MOTFILE [--add-tcl]] [--channel N ...] [--plot both|amplitude|phase] ...
 # Python:
 #   from ptone.ptone_plot import plot_npz
-#   plot_npz('results.npz', tclMotPath='/path/to/2026-04-29_ptoneH20260429_120616_MOT.tsm')
+#   plot_npz('results.npz', tclMotPath='/path/to/2026-04-29_ptoneH20260429_120616_MOT.tsm', addTcl=True)
 
 import argparse
 import json
@@ -47,7 +52,7 @@ def load_tcl_module():
         import tcl
     return tcl
 
-def plot_npz(npzPath, pngPath=None, tclMotPath=None, channels=None, plot='both', amplitude='relative',
+def plot_npz(npzPath, pngPath=None, tclMotPath=None, addTcl=False, channels=None, plot='both', amplitude='relative',
              showQuality=True, qualityThreshold=None, legendLoc='upper left'):
     """
     Plot a pilottone.py results file (.npz) and save it as a PNG.
@@ -55,7 +60,11 @@ def plot_npz(npzPath, pngPath=None, tclMotPath=None, channels=None, plot='both',
     npzPath:          results file written by pilottone.py
     pngPath:          output file (default: npzPath with .png instead of .npz)
     tclMotPath:       TCL (TracSuite) motion file, e.g. '/path/2026-04-29_ptoneH20260429_120616_MOT.tsm'.
-                      If set, framewise 3D head motion from it is overlaid
+                      If set, framewise 3D head motion from it is overlaid.  If not, the TCL data saved in
+                      the results file is overlaid, if it has any
+    addTcl:           also save tclMotPath's motion into the results file before plotting (replacing any
+                      TCL data it has).  Raises ValueError, leaving the file unchanged, if the motion file
+                      doesn't cover the whole scan
     channels:         channel indices to plot (default: all)
     plot:             'both', 'amplitude' or 'phase'
     amplitude:        'relative' (relative_amplitude, default) or 'raw' (amplitude)
@@ -71,6 +80,12 @@ def plot_npz(npzPath, pngPath=None, tclMotPath=None, channels=None, plot='both',
         raise ValueError("plot must be 'both', 'amplitude' or 'phase' (got %r)" % (plot,))
     if amplitude not in ('relative', 'raw'):
         raise ValueError("amplitude must be 'relative' or 'raw' (got %r)" % (amplitude,))
+
+    if addTcl:
+        if tclMotPath is None:
+            raise ValueError("addTcl needs a TCL motion file (tclMotPath)")
+        load_tcl_module().add_tcl_to_npz(npzPath, tclMotPath)
+        tclMotPath = None       # Now plotted from the results file
 
     d = np.load(npzPath)
     settings = json.loads(str(d['settings'])) if 'settings' in d.files else {}
@@ -99,10 +114,13 @@ def plot_npz(npzPath, pngPath=None, tclMotPath=None, channels=None, plot='both',
     # Y-limits are set from lines at least this good, as for the phase in fast_phase_inspect.py
     yLimQuality = qualityThreshold if qualityThreshold is not None else 0.5
 
+    # Head motion: from tclMotPath if given, else from the TCL data in the results file, if it has any
     motion = None
     if tclMotPath is not None:
         tcl = load_tcl_module()
         motion = tcl.match_tcl(tcl.read_tcl(tclMotPath), d['time_ms'])['3D motion framewise'].values
+    elif 'tcl_3d_motion_framewise' in d.files:
+        motion = d['tcl_3d_motion_framewise']
 
     refChan = settings.get('refChanIdx')
     txStartLine = settings.get('ptoneTxStartScanCounter')
@@ -190,7 +208,12 @@ def main(argv=None):
     parser.add_argument('--outfile', default=None, help='Output PNG (default: npzfile with .png)')
     parser.add_argument('--tcl', default=None, metavar='MOTFILE',
                         help='TCL (TracSuite) motion file (*_MOT.tsm) to overlay framewise 3D head motion, '
-                             'e.g. /path/2026-04-29_ptoneH20260429_120616_MOT.tsm')
+                             'e.g. /path/2026-04-29_ptoneH20260429_120616_MOT.tsm.  Default: the TCL data saved '
+                             'in the results file, if it has any')
+    parser.add_argument('--add-tcl', action='store_true',
+                        help='Also save the --tcl motion, matched to each line, into the results file (replacing '
+                             "any TCL data it has), so later plots show it without --tcl.  Fails, leaving the "
+                             "file unchanged, if the motion file doesn't cover the whole scan")
     parser.add_argument('--channel', type=int, nargs='+', default=None, metavar='N',
                         help='Plot only these channels (default: all)')
     parser.add_argument('--plot', choices=('both', 'amplitude', 'phase'), default='both',
@@ -207,13 +230,19 @@ def main(argv=None):
     if args.tcl is not None and not os.path.isfile(args.tcl):
         print("ptone_plot.py: ERROR: TCL motion file not found: %s" % args.tcl, file=sys.stderr)
         return 1
+    if args.add_tcl and args.tcl is None:
+        print("ptone_plot.py: ERROR: --add-tcl needs a TCL motion file (--tcl)", file=sys.stderr)
+        return 1
     try:
-        pngPath = plot_npz(args.npzfile, pngPath=args.outfile, tclMotPath=args.tcl, channels=args.channel,
+        pngPath = plot_npz(args.npzfile, pngPath=args.outfile, tclMotPath=args.tcl, addTcl=args.add_tcl,
+                           channels=args.channel,
                            plot=args.plot, amplitude=args.amplitude, showQuality=not args.no_quality,
                            qualityThreshold=args.quality_threshold, legendLoc=args.legend_loc)
     except (ValueError, OSError) as e:
         print("ptone_plot.py: ERROR: %s" % e, file=sys.stderr)
         return 1
+    if args.add_tcl:
+        print("ptone_plot.py: Added TCL motion from %s to %s" % (args.tcl, args.npzfile))
     print("ptone_plot.py: Saved plot to %s" % pngPath)
     return 0
 

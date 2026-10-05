@@ -60,24 +60,66 @@ def test_already_processed_is_skipped(tmp_path):
                                     str(tmp_path), 0, 'pilottone_offline', False, str(tmp_path / 'log.txt'))
     assert (status, new) == ('skipped', [])
 
-# ----- TCL choice --------------------------------------------------------------------------------
+# ----- TCL motion --------------------------------------------------------------------------------
 
-def test_choose_tcl_by_time_range(tmp_path):
+def test_tcl_time_ranges_skips_unreadable(tmp_path):
     pytest.importorskip('pandas')
-    morning = str(tmp_path / 'morning_MOT.tsm')
-    afternoon = str(tmp_path / 'afternoon_MOT.tsm')
-    morningStart = write_tcl(morning, startTime='09:00:00.000', numSamples=1000)     # 100 s
-    afternoonStart = write_tcl(afternoon, startTime='14:00:00.000', numSamples=1000)
-    ranges = batch.tcl_time_ranges([morning, afternoon])
+    good = str(tmp_path / 'good_MOT.tsm')
+    startMs = write_tcl(good, startTime='09:00:00.000', numSamples=1000)
+    bad = tmp_path / 'bad_MOT.tsm'
+    bad.write_text('not a TracSuite file')
+    assert batch.tcl_time_ranges([good, str(bad)]) == {good: (startMs, startMs + 99900)}
 
-    def npz_at(name, startMs):
-        path = str(tmp_path / name)
-        np.savez(path, time_ms=startMs + np.arange(0, 50000, 100))   # 50 s of lines
-        return path
-    assert batch.choose_tcl(npz_at('a.npz', afternoonStart + 10000), ranges) == afternoon
-    assert batch.choose_tcl(npz_at('m.npz', morningStart), ranges) == morning
-    assert batch.choose_tcl(npz_at('late.npz', afternoonStart + 80000), ranges) is None   # Runs past the end
-    assert batch.choose_tcl(npz_at('none.npz', morningStart - 3600000), ranges) is None
+def make_plottable_result(path, startMs):
+    # A results file with everything ptone_plot.py needs
+    from ptone.tests.test_ptone_plot import make_npz
+    return make_npz(path, startMs=startMs)
+
+def test_plot_with_tcl(tmp_path):
+    # Results covered by a TCL file get its motion (saved by ptone_plot.py --add-tcl); others are plotted
+    # without it, or, with onlyWithTcl, not at all
+    pytest.importorskip('pandas')
+    motPath = str(tmp_path / 'session_MOT.tsm')
+    startMs = write_tcl(motPath, startTime='09:00:00.000', numSamples=1000)          # 100 s
+    covered = make_plottable_result(tmp_path / 'covered.npz', startMs + 1000)
+    outside = make_plottable_result(tmp_path / 'outside.npz', startMs + 3600000)
+    logPath = str(tmp_path / 'log.txt')
+
+    counts = {'tcl added': 0, 'no tcl': 0, 'plotted': 0, 'plot failed': 0}
+    batch.plot_with_tcl([covered, outside], [motPath], logPath, counts)
+    assert counts == {'tcl added': 1, 'no tcl': 1, 'plotted': 2, 'plot failed': 0}
+    assert str(np.load(covered)['tcl_file']) == motPath
+    assert not any(k.startswith('tcl_') for k in np.load(outside).files)
+    assert os.path.exists(covered.replace('.npz', '.png')) and os.path.exists(outside.replace('.npz', '.png'))
+
+    os.remove(outside.replace('.npz', '.png'))
+    counts = {'tcl added': 0, 'no tcl': 0, 'plotted': 0, 'plot failed': 0}
+    batch.plot_with_tcl([outside], [], logPath, counts, onlyWithTcl=True)
+    assert counts == {'tcl added': 0, 'no tcl': 1, 'plotted': 0, 'plot failed': 0}
+    assert not os.path.exists(outside.replace('.npz', '.png'))
+
+def test_add_tcl_only(tmp_path):
+    # --addTclOnly adds TCL data to existing results without processing raw data (no server), and re-plots
+    # only the results it added TCL data to
+    pytest.importorskip('pandas')
+    inputDir = tmp_path / 'input'
+    subjectDir = inputDir / 'ptoneH20260429'
+    subjectDir.mkdir(parents=True)
+    startMs = write_tcl(str(subjectDir / 'session_MOT.tsm'), startTime='09:00:00.000', numSamples=1000)
+    (subjectDir / 'meas_MID00284_FID1_x.dat').write_bytes(b'not a real raw data file')
+    subjectOut = tmp_path / 'output' / 'ptoneH20260429'
+    subjectOut.mkdir(parents=True)
+    covered = make_plottable_result(subjectOut / 'ptoneH20260429--MID00284-x--20261002-120000-000.npz', startMs + 1000)
+    outside = make_plottable_result(subjectOut / 'ptoneH20260429--MID00285-y--20261002-120100-000.npz', startMs + 3600000)
+
+    assert batch.main([str(inputDir), str(tmp_path / 'output'), '--addTclOnly', '--port', '1']) == 0
+    with np.load(covered) as d:
+        assert str(d['tcl_file']) == str(subjectDir / 'session_MOT.tsm')
+    assert os.path.exists(covered.replace('.npz', '.png'))                  # Re-plotted with its TCL motion
+    assert not os.path.exists(outside.replace('.npz', '.png'))              # No TCL data, so not re-plotted
+    log = open(glob.glob(str(subjectOut / 'ptone_offline_batch--*.txt'))[0]).read()
+    assert 'tcl added 1' in log and 'no tcl 1' in log and 'plotted 1' in log and 'plot failed 0' in log
+    assert 'processed 0' in log and 'MRD server' not in log
 
 # ----- End to end --------------------------------------------------------------------------------
 
@@ -109,8 +151,10 @@ def test_end_to_end(tmp_path):
     logs = glob.glob(str(subjectOut / 'ptone_offline_batch--*.txt'))
     assert len(logs) == 1
     log = open(logs[0]).read()
-    assert '--tcl' in log and '_MOT.tsm' in log                             # Plotted with head motion
-    assert 'processed 1' in log
+    assert 'processed 1' in log and 'tcl added 1' in log
+    with np.load(npz[0]) as d:                                              # TCL head motion added
+        assert str(d['tcl_file']).endswith('2026-04-29_ptoneH20260429_120616_MOT.tsm')
+        assert d['tcl_3d_motion'].shape == d['time_ms'].shape
 
     # Second run: already processed, so skipped
     assert batch.main(args) == 0

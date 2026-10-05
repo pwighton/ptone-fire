@@ -6,10 +6,15 @@
 #     siemens_to_ismrmrd (last measurement only), sent through an MRD server running pilottone with the
 #     --mrdClientConfig config (default pilottone_offline), and the temporary .h5 deleted.  Results go to
 #     outputBaseDir/<subject>, named after the subject (outputFileStem)
-#   - each new result is plotted with ptone/ptone_plot.py, with head motion from the TCL motion file
-#     (--tclTsmFilter, default '*_MOT.tsm') whose time range covers the scan, if there is one
+#   - each new result is plotted with ptone/ptone_plot.py.  If a TCL head motion file (--tclTsmFilter,
+#     default '*_MOT.tsm') covers the scan, it's passed with --tcl ... --add-tcl, so the plot shows the
+#     motion and ptone_plot.py saves it into the result's .npz as tcl_ arrays
 #   - everything is logged to outputBaseDir/<subject>/ptone_offline_batch--<YYYYMMDD-HHMMSS>.txt
 # Raw data files whose MID already has a result in the output folder are skipped, unless --overwrite.
+# With --addTclOnly, no raw data is processed: the results already in each subject's output folder that
+# a TCL motion file covers are re-plotted the same way, adding the motion (e.g. results from live scans,
+# which pilottone.py plots before any TCL data is available).  This script only finds the files and runs
+# ptone_plot.py, which does the work.
 #
 # Command line:
 #   ptone-offline-batch <inputBaseDir> <outputBaseDir> --inputDirFilter 'ptoneH*'
@@ -125,26 +130,48 @@ def stop_server(server):
     logger.info("MRD server stopped")
 
 def tcl_time_ranges(tclPaths):
-    # (first, last) System Time (ms since midnight) of each TCL motion file; files that can't be read are left out
+    # {motPath: (first, last) System Time in ms since midnight} for the TCL motion files that can be read
     sys.path.insert(0, repoDir)
-    from ptone.tcl import read_tcl
+    from ptone.tcl import read_tcl, time_range
     ranges = {}
     for path in tclPaths:
         try:
-            times = read_tcl(path)['sys_time_ms_since_midnight'].values
-            ranges[path] = (times.min(), times.max())
-            logger.info("TCL motion file %s covers %s to %s", path, ms_to_time(times.min()), ms_to_time(times.max()))
+            ranges[path] = time_range(read_tcl(path))
+            logger.info("TCL motion file %s covers %s to %s", path, ms_to_time(ranges[path][0]), ms_to_time(ranges[path][1]))
         except Exception as e:
             logger.error("Could not read TCL motion file %s: %s", path, e)
     return ranges
 
-def choose_tcl(npzPath, tclRanges):
-    # The TCL motion file whose time range covers the scan in npzPath, or None
-    timeMs = np.load(npzPath)['time_ms']
-    for path, (first, last) in tclRanges.items():
-        if first <= timeMs.min() and timeMs.max() <= last:
-            return path
-    return None
+def plot_with_tcl(npzPaths, tclPaths, logPath, counts, onlyWithTcl=False):
+    # Plot each results file with ptone/ptone_plot.py.  If one of tclPaths covers the scan, the plot shows
+    # its head motion, which ptone_plot.py also saves into the results file (--tcl ... --add-tcl).
+    # Otherwise the plot has no motion, or with onlyWithTcl the file isn't plotted.
+    # Counts 'tcl added', 'no tcl', 'plotted' and 'plot failed'
+    sys.path.insert(0, repoDir)
+    from ptone.tcl import choose_tcl
+    tclRanges = tcl_time_ranges(tclPaths) if (npzPaths and tclPaths) else {}
+    for npzPath in npzPaths:
+        try:
+            tclPath = choose_tcl(np.load(npzPath)['time_ms'], tclRanges)
+        except Exception:
+            logger.exception("Could not check TCL coverage for %s", npzPath)
+            tclPath = None
+        plotCmd = [sys.executable, os.path.join(ptoneDir, 'ptone_plot.py'), npzPath]
+        if tclPath is not None:
+            plotCmd += ['--tcl', tclPath, '--add-tcl']
+        else:
+            logger.info("No TCL motion file covers %s%s", os.path.basename(npzPath),
+                        '' if tclPaths else ' (no TCL motion files found)')
+            counts['no tcl'] += 1
+            if onlyWithTcl:
+                continue
+        if run_logged(plotCmd, logPath) == 0:
+            counts['plotted'] += 1
+            if tclPath is not None:
+                counts['tcl added'] += 1
+        else:
+            logger.error("Plot failed: %s", npzPath)
+            counts['plot failed'] += 1
 
 def ms_to_time(ms):
     return '%02d:%02d:%06.3f' % (ms // 3600000, ms % 3600000 // 60000, ms % 60000 / 1000)
@@ -210,50 +237,42 @@ def process_subject(subjectDir, outputBaseDir, args):
     fileHandler = logging.FileHandler(logPath)
     fileHandler.setFormatter(logging.Formatter('%(asctime)s - %(levelname)s - %(message)s'))
     logger.addHandler(fileHandler)
-    counts = {'processed': 0, 'skipped': 0, 'no results': 0, 'failed': 0, 'plotted': 0, 'plot failed': 0}
+    counts = {'processed': 0, 'skipped': 0, 'no results': 0, 'failed': 0, 'tcl added': 0, 'no tcl': 0,
+              'plotted': 0, 'plot failed': 0}
     subjectStart = time.monotonic()
     try:
         logger.info("===== Subject %s: %s -> %s", subjectName, subjectDir, outputDir)
-        datPaths = find_files(subjectDir, args.measDatFilter)
         tclPaths = find_files(subjectDir, args.tclTsmFilter)
-        logger.info("Found %d raw data file(s) matching '%s' and %d TCL motion file(s) matching '%s'",
-                    len(datPaths), args.measDatFilter, len(tclPaths), args.tclTsmFilter)
 
-        newResults = []
-        if datPaths:
-            server = start_server(args.port, logPath)
-            try:
-                for i, datPath in enumerate(datPaths):
-                    logger.info("----- %s: file %d of %d: %s", subjectName, i + 1, len(datPaths), datPath)
-                    try:
-                        status, new = process_dat(datPath, subjectName, outputDir, tmpDir, args.port,
-                                                  args.mrdClientConfig, args.overwrite, logPath)
-                    except Exception:
-                        logger.exception("Failed: %s", datPath)
-                        status, new = 'failed', []
-                    counts[status] += 1
-                    newResults += new
-            finally:
-                stop_server(server)
+        if args.addTclOnly:
+            # Only add TCL head motion to the results already in the output folder
+            npzPaths = sorted(glob.glob(os.path.join(outputDir, '*.npz')))
+            logger.info("Adding TCL motion only: %d result file(s) in %s, %d TCL motion file(s) matching '%s'",
+                        len(npzPaths), outputDir, len(tclPaths), args.tclTsmFilter)
+            plot_with_tcl(npzPaths, tclPaths, logPath, counts, onlyWithTcl=True)
+        else:
+            datPaths = find_files(subjectDir, args.measDatFilter)
+            logger.info("Found %d raw data file(s) matching '%s' and %d TCL motion file(s) matching '%s'",
+                        len(datPaths), args.measDatFilter, len(tclPaths), args.tclTsmFilter)
 
-        # Plot the new results, with head motion from the TCL file covering each scan
-        tclRanges = tcl_time_ranges(tclPaths) if (newResults and tclPaths) else {}
-        for npzPath in newResults:
-            plotCmd = [sys.executable, os.path.join(ptoneDir, 'ptone_plot.py'), npzPath]
-            try:
-                tclPath = choose_tcl(npzPath, tclRanges)
-            except Exception:
-                logger.exception("Could not check TCL coverage for %s", npzPath)
-                tclPath = None
-            if tclPath is not None:
-                plotCmd += ['--tcl', tclPath]
-            elif tclPaths:
-                logger.info("No TCL motion file covers %s; plotting without motion", os.path.basename(npzPath))
-            if run_logged(plotCmd, logPath) == 0:
-                counts['plotted'] += 1
-            else:
-                logger.error("Plot failed: %s", npzPath)
-                counts['plot failed'] += 1
+            newResults = []
+            if datPaths:
+                server = start_server(args.port, logPath)
+                try:
+                    for i, datPath in enumerate(datPaths):
+                        logger.info("----- %s: file %d of %d: %s", subjectName, i + 1, len(datPaths), datPath)
+                        try:
+                            status, new = process_dat(datPath, subjectName, outputDir, tmpDir, args.port,
+                                                      args.mrdClientConfig, args.overwrite, logPath)
+                        except Exception:
+                            logger.exception("Failed: %s", datPath)
+                            status, new = 'failed', []
+                        counts[status] += 1
+                        newResults += new
+                finally:
+                    stop_server(server)
+
+            plot_with_tcl(newResults, tclPaths, logPath, counts)
     except Exception:
         logger.exception("Subject %s failed", subjectName)
         counts['failed'] += 1
@@ -277,6 +296,9 @@ def main(argv=None):
     parser.add_argument('--tmpDir', default=None,
                         help='Where temporary .h5 files go, in a subdirectory per subject (default: the subject output directory)')
     parser.add_argument('--overwrite', action='store_true', help='Reprocess raw data files that already have results')
+    parser.add_argument('--addTclOnly', action='store_true',
+                        help="Don't process raw data: only add TCL head motion to the results (.npz) already in each "
+                             "subject's output directory, replacing any TCL data they have, and re-plot those results")
     args = parser.parse_args(argv)
 
     if not logger.handlers:

@@ -98,6 +98,58 @@ def test_tcl_motion(tmp_path):
     assert result.returncode == 0, result.stderr
     png_size(tmp_path / 'cli.png')
 
+def test_tcl_motion_from_npz(tmp_path):
+    # TCL data stored in the results file is plotted exactly as if it was given with --tcl
+    pytest.importorskip('pandas')
+    from ptone.tcl import add_tcl_to_npz
+    motPath = str(tmp_path / 'session_120616_MOT.tsm')
+    startMs = write_tcl(motPath, numSamples=100)
+    plain = make_npz(tmp_path / 'plain.npz', startMs=startMs)
+    withTcl = make_npz(tmp_path / 'with_tcl.npz', startMs=startMs)
+    add_tcl_to_npz(withTcl, motPath)
+    fromNpz = plot_npz(withTcl, pngPath=str(tmp_path / 'from_npz.png'))
+    fromFile = plot_npz(plain, pngPath=str(tmp_path / 'from_file.png'), tclMotPath=motPath)
+    noMotion = plot_npz(plain, pngPath=str(tmp_path / 'no_motion.png'))
+    read = lambda p: open(p, 'rb').read()
+    assert read(fromNpz) == read(fromFile)
+    assert read(fromNpz) != read(noMotion)
+
+def test_add_tcl(tmp_path):
+    # --add-tcl saves the motion into the results file; its plot and later plots without --tcl match a
+    # plot made with --tcl
+    pytest.importorskip('pandas')
+    motPath = str(tmp_path / 'session_120616_MOT.tsm')
+    startMs = write_tcl(motPath, numSamples=100)
+    plain = make_npz(tmp_path / 'plain.npz', startMs=startMs)
+    viaCli = make_npz(tmp_path / 'cli.npz', startMs=startMs)
+    viaPython = make_npz(tmp_path / 'python.npz', startMs=startMs)
+    reference = open(plot_npz(plain, pngPath=str(tmp_path / 'reference.png'), tclMotPath=motPath), 'rb').read()
+
+    result = run_cli(viaCli, '--tcl', motPath, '--add-tcl')
+    assert result.returncode == 0, result.stderr
+    assert 'Added TCL motion' in result.stdout
+    assert open(viaCli.replace('.npz', '.png'), 'rb').read() == reference
+    assert str(np.load(viaCli)['tcl_file']) == os.path.abspath(motPath)
+
+    plot_npz(viaPython, tclMotPath=motPath, addTcl=True)
+    assert 'tcl_3d_motion' in np.load(viaPython).files
+    # Plotted again later without --tcl: the saved motion is shown
+    assert open(plot_npz(viaPython, pngPath=str(tmp_path / 'later.png')), 'rb').read() == reference
+
+def test_add_tcl_errors(tmp_path):
+    pytest.importorskip('pandas')
+    motPath = str(tmp_path / 'session_120616_MOT.tsm')
+    startMs = write_tcl(motPath, numSamples=20)                                     # 2 s of motion data
+    npz = make_npz(tmp_path / 'results.npz', startMs=startMs)                        # 5 s of lines
+    before = open(npz, 'rb').read()
+    result = run_cli(npz, '--add-tcl')
+    assert result.returncode == 1 and '--add-tcl needs a TCL motion file' in result.stderr
+    result = run_cli(npz, '--tcl', motPath, '--add-tcl')
+    assert result.returncode == 1 and "doesn't cover the whole scan" in result.stderr
+    assert open(npz, 'rb').read() == before
+    with pytest.raises(ValueError):
+        plot_npz(npz, addTcl=True)
+
 def test_tcl_missing(tmp_path):
     npz = make_npz(tmp_path / 'results.npz')
     result = run_cli(npz, '--tcl', tmp_path / 'nonexistent_MOT.tsm')

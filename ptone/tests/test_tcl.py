@@ -87,3 +87,76 @@ def test_real_tcl_covers_april_tse(caplog):
     # The TCL camera samples at ~36 Hz, so every line is within a sample period of its match
     matchedMs = df.set_index('Point Cloud Number').loc[matched['Point Cloud Number'], 'sys_time_ms_since_midnight'].values
     assert np.max(np.abs(matchedMs - timeMs)) < 50
+
+# ----- add_tcl_to_npz ----------------------------------------------------------------------------
+
+def make_results(path, startMs, numLines=30, periodMs=150):
+    # A minimal results file like pilottone.py's, with a string entry as well as arrays
+    rng = np.random.default_rng(1)
+    np.savez(path, time_ms=startMs + periodMs * np.arange(numLines), relative_phase=rng.random((numLines, 4)),
+             quality=rng.random(numLines), settings=np.array('{"refChanIdx": 0}'))
+    return str(path)
+
+def test_add_tcl_to_npz(tmp_path):
+    from ptone.tcl import add_tcl_to_npz, NPZ_TCL_KEYS
+    motPath = str(tmp_path / 'session_120616_MOT.tsm')
+    startMs = write_tcl(motPath, numSamples=100)
+    npzPath = make_results(tmp_path / 'results.npz', startMs + 200)
+    with np.load(npzPath) as d:
+        before = {k: d[k] for k in d.files}
+
+    add_tcl_to_npz(npzPath, motPath)
+
+    expected = match_tcl(read_tcl(motPath), before['time_ms'])
+    with np.load(npzPath) as d:
+        # Original contents unchanged
+        for k, v in before.items():
+            assert np.array_equal(d[k], v), k
+        # TCL arrays added, one value per line, as match_tcl() gives
+        for key, col in NPZ_TCL_KEYS.items():
+            assert d[key].shape == before['time_ms'].shape, key
+            assert np.allclose(d[key], expected[col].values), key
+        assert str(d['tcl_file']) == os.path.abspath(motPath)
+        assert set(d.files) == set(before) | set(NPZ_TCL_KEYS) | {'tcl_file'}
+    assert not os.path.exists(npzPath + '.tmp')
+
+def test_add_tcl_to_npz_replaces_existing(tmp_path):
+    from ptone.tcl import add_tcl_to_npz
+    first = str(tmp_path / 'first_MOT.tsm'); second = str(tmp_path / 'second_MOT.tsm')
+    startMs = write_tcl(first, numSamples=100)
+    write_tcl(second, startTime='11:29:38.541', numSamples=100, periodMs=50)    # Same start, different times
+    npzPath = make_results(tmp_path / 'results.npz', startMs + 200, numLines=10)
+    add_tcl_to_npz(npzPath, first)
+    add_tcl_to_npz(npzPath, second, tclDf=read_tcl(second))
+    with np.load(npzPath) as d:
+        assert str(d['tcl_file']) == os.path.abspath(second)
+        assert np.allclose(d['tcl_3d_motion'], match_tcl(read_tcl(second), d['time_ms'])['3D motion'].values)
+
+def test_add_tcl_to_npz_requires_coverage(tmp_path):
+    # A motion file that doesn't cover the whole scan isn't added, and the file is left unchanged
+    from ptone.tcl import add_tcl_to_npz
+    motPath = str(tmp_path / 'session_120616_MOT.tsm')
+    startMs = write_tcl(motPath, numSamples=100)                                    # 10 s
+    npzPath = make_results(tmp_path / 'results.npz', startMs + 8000, numLines=30)   # Runs past the end
+    before = open(npzPath, 'rb').read()
+    with pytest.raises(ValueError, match="doesn't cover the whole scan"):
+        add_tcl_to_npz(npzPath, motPath)
+    assert open(npzPath, 'rb').read() == before
+
+# ----- Choosing the motion file covering a scan ----------------------------------------------------
+
+def test_choose_tcl_by_time_range(tmp_path):
+    from ptone.tcl import time_range, choose_tcl
+    morning = str(tmp_path / 'morning_MOT.tsm')
+    afternoon = str(tmp_path / 'afternoon_MOT.tsm')
+    morningStart = write_tcl(morning, startTime='09:00:00.000', numSamples=1000)       # 100 s
+    afternoonStart = write_tcl(afternoon, startTime='14:00:00.000', numSamples=1000)
+    ranges = {p: time_range(read_tcl(p)) for p in (morning, afternoon)}
+    assert ranges[morning] == (morningStart, morningStart + 99900)
+
+    lines = lambda startMs: startMs + np.arange(0, 50000, 100)                          # 50 s of lines
+    assert choose_tcl(lines(afternoonStart + 10000), ranges) == afternoon
+    assert choose_tcl(lines(morningStart), ranges) == morning
+    assert choose_tcl(lines(afternoonStart + 80000), ranges) is None                   # Runs past the end
+    assert choose_tcl(lines(morningStart - 3600000), ranges) is None
+    assert choose_tcl(lines(morningStart), {}) is None

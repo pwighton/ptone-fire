@@ -5,6 +5,9 @@
 # clock) is the only time the matching uses; kstream also merges in the timing file (*_TIM.tst), but its
 # 'Remote Time' is the same as 'System Time' and its other columns aren't used.  Lines are matched by
 # their scanner timestamps (ms since midnight) instead of a twix mdb list.
+#
+# Also: choosing the motion file that covers a scan (time_range, choose_tcl), and adding the matched
+# motion to a pilottone.py results file (add_tcl_to_npz).
 
 import logging
 import os
@@ -66,3 +69,69 @@ def match_tcl(tclDf, timeMs):
     matched = tclDf.iloc[idxs][tclCols].reset_index(drop=True)
     matched['3D motion framewise'] = matched['3D motion'].diff().fillna(0).abs()
     return matched
+
+def time_range(tclDf):
+    """(first, last) 'System Time' of a read_tcl() DataFrame, in ms since midnight."""
+    times = tclDf['sys_time_ms_since_midnight'].values
+    return times.min(), times.max()
+
+def covers(tclRange, timeMs):
+    """Whether a TCL time range (first, last) covers all of timeMs (ms since midnight)."""
+    first, last = tclRange
+    return first <= np.min(timeMs) and np.max(timeMs) <= last
+
+def choose_tcl(timeMs, tclRanges):
+    """
+    The TCL motion file that covers a scan, or None.
+
+    timeMs:    the scan's line timestamps in ms since midnight (the npz 'time_ms')
+    tclRanges: {motPath: time_range(read_tcl(motPath))} for the candidate motion files
+    """
+    for path, tclRange in tclRanges.items():
+        if covers(tclRange, timeMs):
+            return path
+    return None
+
+# Arrays add_tcl_to_npz() adds to a results file: npz key -> match_tcl() column
+NPZ_TCL_KEYS = {
+    'tcl_Tx':                  'Tx',
+    'tcl_Ty':                  'Ty',
+    'tcl_Tz':                  'Tz',
+    'tcl_Rx':                  'Rx',
+    'tcl_Ry':                  'Ry',
+    'tcl_Rz':                  'Rz',
+    'tcl_3d_motion':           '3D motion',
+    'tcl_3d_motion_framewise': '3D motion framewise',
+    'tcl_point_cloud_number':  'Point Cloud Number',
+}
+
+def add_tcl_to_npz(npzPath, motPath, tclDf=None):
+    """
+    Add TCL head motion, matched to each analysed line, to a pilottone.py results file (.npz).
+
+    The file is rewritten with all its existing arrays plus the NPZ_TCL_KEYS arrays (one value per line,
+    matched by 'time_ms' with match_tcl()) and 'tcl_file' (motPath).  Any tcl_ arrays already in the file
+    are replaced.  The file is written to a temporary file first and then renamed, so an interruption
+    can't leave it half-written.
+
+    Raises ValueError, leaving the file unchanged, if the motion file doesn't cover the whole scan: lines
+    outside it would be matched to the nearest end of the motion data, which would be wrong.
+
+    tclDf: read_tcl(motPath), if already read (e.g. when adding the same file to several scans).
+    """
+    if tclDf is None:
+        tclDf = read_tcl(motPath)
+    with np.load(npzPath) as d:
+        arrays = {k: d[k] for k in d.files if not k.startswith('tcl_')}
+    if not covers(time_range(tclDf), arrays['time_ms']):
+        raise ValueError("TCL motion file %s doesn't cover the whole scan in %s, so its motion wasn't added"
+                         % (motPath, npzPath))
+    matched = match_tcl(tclDf, arrays['time_ms'])
+    for key, col in NPZ_TCL_KEYS.items():
+        arrays[key] = matched[col].values
+    arrays['tcl_file'] = np.array(os.path.abspath(motPath))
+
+    tmpPath = npzPath + '.tmp'
+    with open(tmpPath, 'wb') as f:
+        np.savez(f, **arrays)
+    os.replace(tmpPath, npzPath)
