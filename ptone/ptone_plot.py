@@ -10,7 +10,8 @@
 # Modelled on kstream's kstream/fast_phase_inspect.py (gen_plot).
 #
 # Command line:
-#   python ptone/ptone_plot.py results.npz [--tcl MOTFILE [--add-tcl]] [--channel N ...] [--plot both|amplitude|phase] ...
+#   ptone-plot results.npz [--tcl MOTFILE [--add-tcl]] [--channel N ...] [--plot both|amplitude|phase] ...
+#   (or python ptone/ptone_plot.py ...)
 # Python:
 #   from ptone.ptone_plot import plot_npz
 #   plot_npz('results.npz', tclMotPath='/path/to/2026-04-29_ptoneH20260429_120616_MOT.tsm', addTcl=True)

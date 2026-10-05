@@ -1,5 +1,5 @@
 # Command-line entry points, so the client and server can be run from any directory as 'mrd-client' and
-# 'mrd-server', and the pilot tone batch script as 'ptone-offline-batch' (see pyproject.toml).  Each runs
+# 'mrd-server', and the pilot tone scripts as 'ptone-offline-batch' and 'ptone-plot' (see pyproject.toml).  Each runs
 # the script exactly as 'python client.py' or 'python main.py' would: as __main__, with this repository
 # first on the module search path, so the server can still load configs such as pilottone.py.
 #
@@ -24,3 +24,6 @@ def server():
 
 def ptone_offline_batch():
     run_script(os.path.join('ptone', 'ptone_offline_batch.py'))
+
+def ptone_plot():
+    run_script(os.path.join('ptone', 'ptone_plot.py'))
