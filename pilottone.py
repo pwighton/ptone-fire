@@ -43,7 +43,7 @@ defaultPtoneQualityThreshold = 0.5
 
 # Default for bulkMotionMethod in pilottone.json: the real-time bulk head motion score (ptone/bulk_motion.py),
 # or 'none' for no score.  Each method's parameters are set as <methodName><Parameter>, e.g.
-# medianFilterMinWindowS (see get_bulk_motion_params())
+# medianFilterWindowS (see get_bulk_motion_params())
 defaultBulkMotionMethod = 'medianFilter'
 
 # Python that runs ptone/tx_waveforms.py.  It needs UHD, which can't be installed in this environment
@@ -105,7 +105,7 @@ def get_flags_config_param(config, key, default):
 
 def get_bulk_motion_params(config, method):
     # The bulk motion method's parameters from the JSON config, each named <method><Parameter> (e.g.
-    # medianFilterMinWindowS for medianFilter's minWindowS); see config_params() in ptone/bulk_motion.py.
+    # medianFilterWindowS for medianFilter's windowS); see config_params() in ptone/bulk_motion.py.
     # None for method 'none'; ValueError for an unknown method
     return config_params(config, method)
 

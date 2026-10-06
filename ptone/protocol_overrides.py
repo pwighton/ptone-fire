@@ -3,8 +3,8 @@
 # protocolOverrides is an ordered list of rules.  Each has a 'match' pattern and the settings to use when the
 # scan's protocol name (from the MRD header, as the scanner sends it) matches it, e.g.
 #   "protocolOverrides": [
-#       {"match": "*tse*", "medianFilterMinWindowS": "2"},
-#       {"match": "*swi*", "medianFilterMinWindowS": "5"}
+#       {"match": "*tse*", "medianFilterWindowS": "2"},
+#       {"match": "*swi*", "medianFilterWindowS": "5"}
 #   ]
 # Patterns are shell-style wildcards ('*' any characters, '?' one character, '[abc]' one of a, b, c), and
 # case doesn't matter.  The first rule that matches is used; if none does (or there's no protocol name), the

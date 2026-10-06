@@ -19,7 +19,7 @@
 # understate a movement, and its exact definition couldn't be confirmed from the data.
 #
 # Method parameters: the method's defaults, or with --config a pilottone.py JSON config (e.g. pilottone.json):
-# each scan gets the method's parameters from it (<method><Parameter> settings, e.g. medianFilterMinWindowS)
+# each scan gets the method's parameters from it (<method><Parameter> settings, e.g. medianFilterWindowS)
 # after applying its protocolOverrides rules to the scan's protocol name, exactly as pilottone.py does
 # (ptone/protocol_overrides.py).  --param and --sweep values apply on top, to every scan.
 #
@@ -36,11 +36,11 @@
 #   plots/        with --plots: per scan, the score and the tracker's change over time
 #
 # Command line:
-#   ptone-bulk-motion-eval <results dir or .npz> ... --out-dir eval [--config pilottone.json] [--param minWindowS=2]
-#                          [--sweep minWindowS=1,2,3,5] [--exclude-sessions ptoneH20260429] [--plots]
+#   ptone-bulk-motion-eval <results dir or .npz> ... --out-dir eval [--config pilottone.json] [--param windowS=2]
+#                          [--sweep windowS=1,2,3,5] [--exclude-sessions ptoneH20260429] [--plots]
 #   (or python ptone/bulk_motion_eval.py ...)
 # Python:
-#   from ptone.bulk_motion_eval import evaluate; windows = evaluate(['results/'], params={'minWindowS': 2})
+#   from ptone.bulk_motion_eval import evaluate; windows = evaluate(['results/'], params={'windowS': 2})
 
 import argparse
 import glob
@@ -379,9 +379,9 @@ def main(argv=None):
                         help="pilottone.py config (e.g. pilottone.json): each scan's method parameters from it, after its "
                              "protocolOverrides rules (default: the method's defaults)")
     parser.add_argument('--param', type=parse_values, action='append', default=[], metavar='NAME=VALUE',
-                        help='Method parameter, e.g. minWindowS=2 (repeatable)')
+                        help='Method parameter, e.g. windowS=2 (repeatable)')
     parser.add_argument('--sweep', type=parse_values, default=None, metavar='NAME=V1,V2,...',
-                        help='Evaluate each value of one parameter, e.g. minWindowS=1,2,3,5')
+                        help='Evaluate each value of one parameter, e.g. windowS=1,2,3,5')
     parser.add_argument('--min-quality', type=float, default=None,
                         help="Lines used (default: each file's ptoneQualityThreshold)")
     parser.add_argument('--lag', type=float, default=LAG_S, help='Tracker shift in seconds (default %g)' % LAG_S)

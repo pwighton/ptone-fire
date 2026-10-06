@@ -85,7 +85,7 @@ def test_jenkinson_rms_relative_and_symmetric():
 
 def test_score_scan_moved_window(tmp_path):
     path = make_result(tmp_path / 'a--MID00001-x.npz', moveAtS=31.0)
-    rows = ev.score_scan(ev.load_scan(path), params={'minWindowS': 3})
+    rows = ev.score_scan(ev.load_scan(path), params={'windowS': 3})
     moved = [r for r in rows if r['trackerMm'] > 1]
     # One window shows the move (the 30-33 s window: more than half of it is after the move)
     assert len(moved) == 1 and moved[0]['windowStartS'] == pytest.approx(30, abs=0.05)
@@ -98,8 +98,8 @@ def test_tracker_lag(tmp_path):
     # puts the move in the same window as the tone; unshifted, in the next one
     path = make_result(tmp_path / 'a--MID00001-x.npz', moveAtS=31.4, mmStep=2.0, trackerLagS=1.0)
     scan = ev.load_scan(path)
-    aligned = ev.score_scan(scan, params={'minWindowS': 3}, lagS=1.0)
-    unaligned = ev.score_scan(scan, params={'minWindowS': 3}, lagS=0)
+    aligned = ev.score_scan(scan, params={'windowS': 3}, lagS=1.0)
+    unaligned = ev.score_scan(scan, params={'windowS': 3}, lagS=0)
     best = lambda rows: max(rows, key=lambda r: r['score'])
     assert best(aligned)['trackerMm'] == pytest.approx(2.0)
     assert best(unaligned)['trackerMm'] < 0.1         # The tracker's move lands in the next window
@@ -110,7 +110,7 @@ def test_files_without_tcl_are_skipped(tmp_path):
     for k in [k for k in d if k.startswith('tcl_')]:
         del d[k]
     np.savez(tmp_path / 'b--MID00002-x.npz', **d)
-    windows, scans = ev.evaluate([str(tmp_path)], params={'minWindowS': 3})
+    windows, scans = ev.evaluate([str(tmp_path)], params={'windowS': 3})
     assert set(s['session'] for s in scans) == {'a'}
 
 def test_evaluate_and_summarize(tmp_path):
@@ -118,7 +118,7 @@ def test_evaluate_and_summarize(tmp_path):
     for i, s in enumerate(('s1', 's2')):
         make_result(tmp_path / ('%s--MID00001-still.npz' % s), protocol='TRA_SWI--nm-pt', seed=10 * i)
         make_result(tmp_path / ('%s--MID00002-move.npz' % s), protocol='TRA_SWI--m-pt', moveAtS=31.0, seed=10 * i + 1)
-    windows, scans = ev.evaluate([str(tmp_path)], params={'minWindowS': 3})
+    windows, scans = ev.evaluate([str(tmp_path)], params={'windowS': 3})
     assert len(scans) == 4 and all(s['firstScoreS'] == pytest.approx(6.0, abs=0.05) for s in scans)
     summary = {r['group']: r for r in ev.summarize(windows, scans)}
     assert set(summary) == {'SWI', 'pooled'}
@@ -134,13 +134,13 @@ def test_evaluate_and_summarize(tmp_path):
 def test_exclude_sessions(tmp_path):
     make_result(tmp_path / 's1--MID00001-a.npz', protocol='TRA_SWI--nm-pt')
     make_result(tmp_path / 's2--MID00001-a.npz', protocol='TRA_SWI--nm-pt')
-    windows, scans = ev.evaluate([str(tmp_path)], params={'minWindowS': 3}, excludeSessions=['s2'])
+    windows, scans = ev.evaluate([str(tmp_path)], params={'windowS': 3}, excludeSessions=['s2'])
     assert set(s['session'] for s in scans) == {'s1'} and set(w['session'] for w in windows) == {'s1'}
 
 def test_context_groups_left_out_of_pooled(tmp_path):
     make_result(tmp_path / 's1--MID00001-a.npz', protocol='TRA_SWI--nm-pt')
     make_result(tmp_path / 's1--MID00002-b.npz', protocol='t1_mprage--nm-pt')
-    windows, scans = ev.evaluate([str(tmp_path)], params={'minWindowS': 3})
+    windows, scans = ev.evaluate([str(tmp_path)], params={'windowS': 3})
     summary = {r['group']: r for r in ev.summarize(windows, scans)}
     assert summary['MPRAGE']['context'] and summary['pooled']['scans'] == 1
 
@@ -154,17 +154,17 @@ def test_command_line_with_sweep_and_plots(tmp_path):
     out = tmp_path / 'out'
     env = dict(os.environ, PYTHONPATH=os.pathsep.join(sys.path))
     result = subprocess.run([sys.executable, os.path.join(repoDir, 'ptone', 'bulk_motion_eval.py'), str(data),
-                             '--out-dir', str(out), '--sweep', 'minWindowS=2,3', '--plots'],
+                             '--out-dir', str(out), '--sweep', 'windowS=2,3', '--plots'],
                             capture_output=True, text=True, env=env, timeout=300)
     assert result.returncode == 0, result.stderr
-    assert '[minWindowS=2]' in result.stdout and '[minWindowS=3]' in result.stdout
+    assert '[windowS=2]' in result.stdout and '[windowS=3]' in result.stdout
     import pandas
     summary = pandas.read_csv(out / 'summary.csv')
-    assert sorted(set(summary['params'])) == ['{"minWindowS": "2"}', '{"minWindowS": "3"}']
+    assert sorted(set(summary['params'])) == ['{"windowS": "2"}', '{"windowS": "3"}']
     windows = pandas.read_csv(out / 'windows.csv')
     assert {'score', 'trackerRmsMm', 'trackerMm', 'trackerDeg', 'moved', 'still', 'windowStartS'} <= set(windows.columns)
     assert (out / 'sessions.csv').exists()
-    assert len(os.listdir(out / 'plots--minWindowS-2')) == 2
+    assert len(os.listdir(out / 'plots--windowS-2')) == 2
 
 def test_command_line_no_tcl_data(tmp_path):
     result = subprocess.run([sys.executable, os.path.join(repoDir, 'ptone', 'bulk_motion_eval.py'), str(tmp_path),
@@ -191,25 +191,25 @@ def test_evaluate_with_config(tmp_path):
     # Each scan's parameters from the config's protocolOverrides rules, as pilottone.py would use them
     make_result(tmp_path / 's1--MID00001-a.npz', protocol='t2_tse_tra_dark-fluid--nm-pt')
     make_result(tmp_path / 's1--MID00002-b.npz', protocol='t2_fl2d_tra_hemo--nm-pt')
-    config = {'parameters': {'medianFilterMinWindowS': '3',
-                             'protocolOverrides': [{'match': '*TSE*', 'medianFilterMinWindowS': '2'}]}}
+    config = {'parameters': {'medianFilterWindowS': '3',
+                             'protocolOverrides': [{'match': '*TSE*', 'medianFilterWindowS': '2'}]}}
     windows, scans = ev.evaluate([str(tmp_path)], config=config)
     byMid = {s['mid']: s for s in scans}
-    assert byMid[1]['protocolOverride'] == '*TSE*' and json.loads(byMid[1]['scanParams']) == {'minWindowS': '2'}
-    assert byMid[2]['protocolOverride'] == '' and json.loads(byMid[2]['scanParams']) == {'minWindowS': '3'}
+    assert byMid[1]['protocolOverride'] == '*TSE*' and json.loads(byMid[1]['scanParams']) == {'windowS': '2'}
+    assert byMid[2]['protocolOverride'] == '' and json.loads(byMid[2]['scanParams']) == {'windowS': '3'}
     # 60 s of lines: 2 s windows give 28 scores (29 complete windows), 3 s windows 18
     assert byMid[1]['numScores'] == 28 and byMid[2]['numScores'] == 18
     assert all(w['protocolOverride'] == '*TSE*' for w in windows if w['mid'] == 1)
     # --param applies on top, to every scan
-    windows, scans = ev.evaluate([str(tmp_path)], params={'minWindowS': '5'}, config=config)
-    assert all(json.loads(s['scanParams']) == {'minWindowS': '5'} for s in scans)
+    windows, scans = ev.evaluate([str(tmp_path)], params={'windowS': '5'}, config=config)
+    assert all(json.loads(s['scanParams']) == {'windowS': '5'} for s in scans)
 
 def test_command_line_config(tmp_path):
     pytest.importorskip('pandas')
     data = tmp_path / 'data'; data.mkdir()
     make_result(data / 's1--MID00001-a.npz', protocol='TRA_SWI--m-pt', moveAtS=31.0)
     with open(tmp_path / 'config.json', 'w') as f:
-        json.dump({'parameters': {'protocolOverrides': [{'match': '*swi*', 'medianFilterMinWindowS': '5'}]}}, f)
+        json.dump({'parameters': {'protocolOverrides': [{'match': '*swi*', 'medianFilterWindowS': '5'}]}}, f)
     out = tmp_path / 'out'
     result = subprocess.run([sys.executable, os.path.join(repoDir, 'ptone', 'bulk_motion_eval.py'), str(data),
                              '--out-dir', str(out), '--config', str(tmp_path / 'config.json')],
@@ -217,4 +217,4 @@ def test_command_line_config(tmp_path):
     assert result.returncode == 0, result.stderr
     import pandas
     windows = pandas.read_csv(out / 'windows.csv')
-    assert set(windows['protocolOverride']) == {'*swi*'} and set(windows['scanParams']) == {'{"minWindowS": "5"}'}
+    assert set(windows['protocolOverride']) == {'*swi*'} and set(windows['scanParams']) == {'{"windowS": "5"}'}

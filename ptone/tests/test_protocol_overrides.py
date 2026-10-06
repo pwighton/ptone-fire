@@ -9,9 +9,9 @@ from ptone.protocol_overrides import apply_protocol_overrides, get_rules, match_
 
 repoDir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-RULES = [{'match': '*tse*', 'medianFilterMinWindowS': '2'},
-         {'match': '*swi*', 'medianFilterMinWindowS': '5', 'ptonePlot': 'false'},
-         {'match': '*', 'medianFilterMinWindowS': '4'}]
+RULES = [{'match': '*tse*', 'medianFilterWindowS': '2'},
+         {'match': '*swi*', 'medianFilterWindowS': '5', 'ptonePlot': 'false'},
+         {'match': '*', 'medianFilterWindowS': '4'}]
 
 def config_with(rules, **params):
     return {'version': '0.0.1', 'parameters': dict(params, protocolOverrides=rules)}
@@ -35,13 +35,13 @@ def test_match_rule_no_match_or_no_name():
     assert match_rule([{'match': 'tse'}], 't2_tse')[0] is None           # Patterns match the whole name
 
 def test_apply_protocol_overrides():
-    config = config_with(RULES[:2], medianFilterMinWindowS='3', ptonePlot='true')
+    config = config_with(RULES[:2], medianFilterWindowS='3', ptonePlot='true')
     newConfig, applied = apply_protocol_overrides(config, 'TRA SWI--nm-pt')
-    assert newConfig['parameters']['medianFilterMinWindowS'] == '5' and newConfig['parameters']['ptonePlot'] == 'false'
-    assert config['parameters']['medianFilterMinWindowS'] == '3'          # The original is unchanged
+    assert newConfig['parameters']['medianFilterWindowS'] == '5' and newConfig['parameters']['ptonePlot'] == 'false'
+    assert config['parameters']['medianFilterWindowS'] == '3'          # The original is unchanged
     assert newConfig['version'] == '0.0.1'
     assert applied == {'protocolName': 'TRA SWI--nm-pt', 'protocolOverrideIndex': 1, 'protocolOverrideMatch': '*swi*',
-                       'protocolOverrideSettings': {'medianFilterMinWindowS': '5', 'ptonePlot': 'false'}}
+                       'protocolOverrideSettings': {'medianFilterWindowS': '5', 'ptonePlot': 'false'}}
     sameConfig, applied = apply_protocol_overrides(config, 't1_mprage')
     assert sameConfig == config and applied['protocolOverrideMatch'] is None and applied['protocolOverrideSettings'] is None
 
@@ -57,7 +57,7 @@ def test_rules_as_json_text():
 @pytest.mark.parametrize('rules, message', [
     ({'match': '*tse*'}, 'must be a list'),
     ('[{"match": "*tse*"', "isn't valid JSON"),
-    ([{'medianFilterMinWindowS': '2'}], "'match' pattern"),
+    ([{'medianFilterWindowS': '2'}], "'match' pattern"),
     (['*tse*'], "'match' pattern"),
     ([{'match': '*', 'protocolOverrides': []}], "can't set protocolOverrides"),
 ])
@@ -71,10 +71,11 @@ def test_malformed_rules(rules, message):
     ('t2_tse_tra_dark-fluid ARIA--nm-pt', '2'),
     ('TRA SWI--nm-pt', '5'),
     ('t2_fl2d_tra_hemo--nm-pt', '3'),
+    ('t2_fl2d_tra_hemo ARIA--m-pt', '3'),
     ('t1_mprage--nm-pt', '3'),
 ])
 def test_repository_configs(configFile, protocol, windowS):
-    # The rules in the repository's configs give the window lengths chosen in the evaluation
+    # The rules in the repository's configs give the chosen window lengths for the test data's protocol names
     with open(os.path.join(repoDir, configFile)) as f:
         config = json.load(f)
-    assert apply_protocol_overrides(config, protocol)[0]['parameters']['medianFilterMinWindowS'] == windowS
+    assert apply_protocol_overrides(config, protocol)[0]['parameters']['medianFilterWindowS'] == windowS

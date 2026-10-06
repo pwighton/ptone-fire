@@ -192,7 +192,7 @@ def replay(d, settings, **params):
 def test_bulk_motion_score_default(tmp_path):
     d, settings, _ = run_moving_tone(tmp_path)
     assert settings['bulkMotionMethod'] == 'medianFilter'
-    assert settings['medianFilterMinWindowS'] == 3.0 and settings['medianFilterMinLinesPerWindow'] == 5
+    assert settings['medianFilterWindowS'] == 3.0 and settings['medianFilterMinLinesPerWindow'] == 5
     assert settings['medianFilterMaxGapS'] is None and settings['bulkMotionError'] is None
     score = d['bulk_motion_score']
     assert score.shape == d['quality'].shape
@@ -201,7 +201,7 @@ def test_bulk_motion_score_default(tmp_path):
     hasScore = np.flatnonzero(np.isfinite(score))
     assert list(d['scan_counter'][hasScore]) == [11 + 75 * k for k in (2, 3, 4)]
     assert settings['bulkMotionNumScores'] == 3
-    np.testing.assert_array_equal(score, replay(d, settings, minWindowS=3))
+    np.testing.assert_array_equal(score, replay(d, settings, windowS=3))
     # The step at 7 s is in the 6-9 s window (more than half of it after the step): RMS over channels 1-3
     # of 0.2 rad; the other windows don't change
     assert score[hasScore[1]] == pytest.approx(0.2, abs=0.01)
@@ -209,14 +209,14 @@ def test_bulk_motion_score_default(tmp_path):
 
 def test_bulk_motion_parameters_from_config(tmp_path, caplog):
     caplog.set_level('INFO')
-    d, settings, path = run_moving_tone(tmp_path, {'medianFilterMinWindowS': '2', 'medianFilterMinLinesPerWindow': '10',
+    d, settings, path = run_moving_tone(tmp_path, {'medianFilterWindowS': '2', 'medianFilterMinLinesPerWindow': '10',
                                                    'medianFilterMaxGapS': '', 'ptoneQualityThreshold': '0.6'})
-    assert settings['medianFilterMinWindowS'] == 2.0 and settings['medianFilterMinLinesPerWindow'] == 10
+    assert settings['medianFilterWindowS'] == 2.0 and settings['medianFilterMinLinesPerWindow'] == 10
     assert settings['medianFilterMaxGapS'] is None
     assert settings['bulkMotionNumScores'] == 5                     # 2 s windows: 0-2, ..., 10-12 s; 12-14 s incomplete
-    np.testing.assert_array_equal(d['bulk_motion_score'], replay(d, settings, minWindowS=2, minLinesPerWindow=10))
+    np.testing.assert_array_equal(d['bulk_motion_score'], replay(d, settings, windowS=2, minLinesPerWindow=10))
     log = caplog.text
-    assert 'Bulk motion score: medianFilter, minWindowS 2.0, minLinesPerWindow 10, maxGapS None' in log
+    assert 'Bulk motion score: medianFilter, windowS 2.0, minLinesPerWindow 10, maxGapS None' in log
     assert log.count('Bulk motion score 0.') == 5
 
 def test_bulk_motion_tr_from_header(tmp_path, caplog):
@@ -230,13 +230,13 @@ def test_bulk_motion_tr_from_header(tmp_path, caplog):
     assert '(TR 597.0 ms' in caplog.text
 
 def test_bulk_motion_none(tmp_path):
-    d, settings, _ = run_moving_tone(tmp_path, {'bulkMotionMethod': 'none', 'medianFilterMinWindowS': '2'})
+    d, settings, _ = run_moving_tone(tmp_path, {'bulkMotionMethod': 'none', 'medianFilterWindowS': '2'})
     assert settings['bulkMotionMethod'] == 'none'
-    assert 'bulk_motion_score' not in d.files and 'medianFilterMinWindowS' not in settings
+    assert 'bulk_motion_score' not in d.files and 'medianFilterWindowS' not in settings
 
 @pytest.mark.parametrize('params, message', [
     ({'bulkMotionMethod': 'nonsense'}, "Unknown bulkMotionMethod 'nonsense'"),
-    ({'medianFilterMinWindowS': '0'}, 'minWindowS must be positive'),
+    ({'medianFilterWindowS': '0'}, 'windowS must be positive'),
 ])
 def test_bulk_motion_bad_settings(tmp_path, params, message):
     # Like a bad flag name: the error is logged and nothing is analysed
@@ -246,8 +246,8 @@ def test_bulk_motion_bad_settings(tmp_path, params, message):
     assert message in open(tmp_path / log).read()
 
 def test_get_bulk_motion_params():
-    config = {'parameters': {'medianFilterMinWindowS': '2', 'medianFilterMaxGapS': ' ', 'otherMinWindowS': '9'}}
-    assert pilottone.get_bulk_motion_params(config, 'medianFilter') == {'minWindowS': '2'}
+    config = {'parameters': {'medianFilterWindowS': '2', 'medianFilterMaxGapS': ' ', 'otherWindowS': '9'}}
+    assert pilottone.get_bulk_motion_params(config, 'medianFilter') == {'windowS': '2'}
     assert pilottone.get_bulk_motion_params(None, 'medianFilter') == {}
     assert pilottone.get_bulk_motion_params(config, 'none') is None
     with pytest.raises(ValueError, match='Unknown bulkMotionMethod'):
@@ -258,25 +258,25 @@ def test_get_bulk_motion_params():
 def header_with_protocol(protocolName):
     return SimpleNamespace(measurementInformation=SimpleNamespace(measurementID='1_2_7', protocolName=protocolName))
 
-OVERRIDES = [{'match': '*tse*', 'medianFilterMinWindowS': '2'}, {'match': '*swi*', 'medianFilterMinWindowS': '5'}]
+OVERRIDES = [{'match': '*tse*', 'medianFilterWindowS': '2'}, {'match': '*swi*', 'medianFilterWindowS': '5'}]
 
 def test_protocol_override_applied(tmp_path, caplog):
     caplog.set_level('INFO')
     d, settings, _ = run_moving_tone(tmp_path, {'protocolOverrides': OVERRIDES}, header=header_with_protocol('t2_TSE_tra--m-pt'))
-    assert settings['medianFilterMinWindowS'] == 2.0
+    assert settings['medianFilterWindowS'] == 2.0
     assert settings['bulkMotionNumScores'] == 5                     # 2 s windows, as in test_bulk_motion_parameters_from_config
     assert settings['protocolName'] == 't2_TSE_tra--m-pt'
     assert settings['protocolOverrideIndex'] == 0 and settings['protocolOverrideMatch'] == '*tse*'
-    assert settings['protocolOverrideSettings'] == {'medianFilterMinWindowS': '2'}
+    assert settings['protocolOverrideSettings'] == {'medianFilterWindowS': '2'}
     import json
     assert json.loads(str(d['config']))['parameters']['protocolOverrides'] == OVERRIDES   # Saved as received
-    assert "Protocol 't2_TSE_tra--m-pt' matches protocolOverrides rule 0 ('*tse*'), which sets: medianFilterMinWindowS = 2" in caplog.text
+    assert "Protocol 't2_TSE_tra--m-pt' matches protocolOverrides rule 0 ('*tse*'), which sets: medianFilterWindowS = 2" in caplog.text
 
 def test_protocol_override_no_match(tmp_path, caplog):
     caplog.set_level('INFO')
-    d, settings, _ = run_moving_tone(tmp_path, {'protocolOverrides': OVERRIDES, 'medianFilterMinWindowS': '4'},
+    d, settings, _ = run_moving_tone(tmp_path, {'protocolOverrides': OVERRIDES, 'medianFilterWindowS': '4'},
                                      header=header_with_protocol('t2_fl2d_tra_hemo--nm-pt'))
-    assert settings['medianFilterMinWindowS'] == 4.0
+    assert settings['medianFilterWindowS'] == 4.0
     assert settings['protocolOverrideMatch'] is None and settings['protocolOverrideSettings'] is None
     assert "Protocol 't2_fl2d_tra_hemo--nm-pt' matches no protocolOverrides rule" in caplog.text
 
@@ -288,7 +288,7 @@ def test_protocol_override_any_setting(tmp_path):
 
 def test_protocol_override_malformed(tmp_path):
     # Like a bad flag name: the error is logged and nothing is analysed
-    d, _, _ = run_moving_tone(tmp_path, {'protocolOverrides': [{'medianFilterMinWindowS': '2'}]},
+    d, _, _ = run_moving_tone(tmp_path, {'protocolOverrides': [{'medianFilterWindowS': '2'}]},
                               header=header_with_protocol('t2_tse'))
     assert d is None
     log = [f for f in os.listdir(tmp_path) if f.endswith('.txt')][0]

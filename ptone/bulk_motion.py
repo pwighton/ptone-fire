@@ -6,7 +6,7 @@
 #
 # Methods share one interface, so others can be added later.  Each is created with the scan's TR and
 # reference channel, and its own parameters:
-#   method = create_bulk_motion('medianFilter', trMs, refChanIdx, {'minWindowS': 3, 'minQuality': 0.5})
+#   method = create_bulk_motion('medianFilter', trMs, refChanIdx, {'windowS': 3, 'minQuality': 0.5})
 #   score = method.update(timeMs, relativePhase, relativeAmplitude, quality)    # once per analysed line
 # update() returns a new score when it has one, else None.  Every method receives every line, with relative
 # phase and amplitude for all channels and the line's quality, and decides itself which to use.
@@ -27,7 +27,7 @@ class MedianFilter:
     Relative phase behaves like a position: it depends on where the head is, so the head moving from one
     position to another shifts many channels' relative phase from one level to another.
 
-    - The scan is divided into back-to-back windows of minWindowS seconds, starting at the first line used.
+    - The scan is divided into back-to-back windows of windowS seconds, starting at the first line used.
     - When a window is complete (a line arrives after its end), each channel's median relative phase over
       the window is taken, if the window has at least minLinesPerWindow lines (otherwise it's skipped).  A
       median switches cleanly to a new level when the head moves, and ignores odd outlying lines.
@@ -47,10 +47,10 @@ class MedianFilter:
     SWI did best with 3-5 s windows, the TSE equally well with 1-2 s.
 
     Parameters (those in PARAMETERS can be set in pilottone.json as medianFilter<Parameter>, e.g.
-    medianFilterMinWindowS):
+    medianFilterWindowS):
       trMs:              the sequence TR in ms (part of the shared interface; not used by this method)
       refChanIdx:        the reference channel for relative phase and amplitude (pilottone.json refChanIdx)
-      minWindowS:        window length in seconds (default 3)
+      windowS:           window length in seconds (default 3)
       minLinesPerWindow: windows with fewer lines have no median (default 5)
       maxGapS:           longest gap in seconds between the end of the compared window and the start of the
                          scored one; None (default) or <= 0 means no limit
@@ -65,26 +65,26 @@ class MedianFilter:
 
     # Parameters that can be set in pilottone.json (as medianFilter<Parameter>), with their defaults
     PARAMETERS = {
-        'minWindowS':        3.0,
+        'windowS':           3.0,
         'minLinesPerWindow': 5,
         'maxGapS':           None,
     }
 
-    def __init__(self, trMs=None, refChanIdx=0, minWindowS=3.0, minLinesPerWindow=5, maxGapS=None, minQuality=0.0):
-        minWindowS = float(minWindowS)
-        if minWindowS <= 0:
-            raise ValueError("minWindowS must be positive (got %s)" % minWindowS)
+    def __init__(self, trMs=None, refChanIdx=0, windowS=3.0, minLinesPerWindow=5, maxGapS=None, minQuality=0.0):
+        windowS = float(windowS)
+        if windowS <= 0:
+            raise ValueError("windowS must be positive (got %s)" % windowS)
         minLinesPerWindow = int(minLinesPerWindow)
         if minLinesPerWindow < 1:
             raise ValueError("minLinesPerWindow must be at least 1 (got %s)" % minLinesPerWindow)
         maxGapS = None if (maxGapS is None or float(maxGapS) <= 0) else float(maxGapS)
         self.trMs = trMs
         self.refChanIdx = int(refChanIdx)
-        self.minWindowS = minWindowS
+        self.windowS = windowS
         self.minLinesPerWindow = minLinesPerWindow
         self.maxGapS = maxGapS
         self.minQuality = float(minQuality)
-        self.windowMs = minWindowS * 1000.0
+        self.windowMs = windowS * 1000.0
 
         self.numChan = None
         self.firstTimeMs = None                     # Start of the first window
@@ -153,7 +153,7 @@ def config_params(config, method):
     """
     The parameters for bulk motion method `method` from a pilottone.py JSON config ({'parameters': {...}}):
     each parameter in the method's PARAMETERS, named <method><Parameter> in the config (e.g.
-    medianFilterMinWindowS for medianFilter's minWindowS).  Absent or empty ones are left out, so the method
+    medianFilterWindowS for medianFilter's windowS).  Absent or empty ones are left out, so the method
     uses its own default.  Values are passed as given (the method converts and checks them).  Returns None
     for method 'none'; raises ValueError for an unknown method.
     """
@@ -173,7 +173,7 @@ def create_bulk_motion(method, trMs, refChanIdx, params=None):
     """
     The bulk motion method called `method` (see METHODS), for a scan with sequence TR trMs (ms, or None)
     and reference channel refChanIdx (the channel relative phase and amplitude are relative to), with the
-    method's own parameters from params (a dict, e.g. {'minWindowS': 3, 'minQuality': 0.5}).  method 'none'
+    method's own parameters from params (a dict, e.g. {'windowS': 3, 'minQuality': 0.5}).  method 'none'
     returns None (no bulk motion score).  Raises ValueError for an unknown method or parameter.
     """
     if method == 'none':
