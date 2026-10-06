@@ -24,13 +24,15 @@ class MedianFilter:
 
     - The scan is divided into back-to-back windows of minWindowS seconds, starting at the first line used.
     - When a window is complete (a line arrives after its end), each channel's median relative phase over
-      the window is taken, if the window has at least MIN_LINES_PER_WINDOW lines.  A median switches
-      cleanly to a new level when the head moves, and ignores odd outlying lines.
+      the window is taken, if the window has at least minLinesPerWindow lines (otherwise it's skipped).  A
+      median switches cleanly to a new level when the head moves, and ignores odd outlying lines.
     - Score: the change in each channel's median from the most recent earlier window that had enough lines,
       combined across channels as a root-mean-square, in radians.  The reference channel (refChanIdx),
-      whose relative phase is always 0, doesn't count.  Comparing with the most recent window with data, rather than
-      strictly the previous window, keeps scores coming across gaps with no lines (e.g. the 6 s between a
-      TSE's bursts of lines).
+      whose relative phase is always 0, doesn't count.  Comparing with the most recent window with data,
+      rather than strictly the previous window, keeps scores coming across gaps with no lines (e.g. the 6 s
+      between a TSE's bursts of lines).  If that window ended more than maxGapS before the current one
+      started, there's no score (the comparison would mostly reflect drift); the current window becomes
+      the one to compare with.
     - One score per window with data, from the second such window on.  A movement raises the score of the
       window it ends in, and of the next one too if it happens in the second half of a window.
 
@@ -39,11 +41,16 @@ class MedianFilter:
     give earlier and more frequent scores but noisier medians; on the test data FLASH and SWI did best with
     3-5 s windows, the TSE equally well with 1-2 s.
 
-    Parameters:
-      trMs:       the sequence TR in ms (part of the shared interface; not used by this method)
-      refChanIdx: the reference channel for relative phase and amplitude (pilottone.json refChanIdx)
-      minWindowS: window length in seconds (default 3)
-      minQuality: lines whose quality is below this are skipped (pilottone.py passes ptoneQualityThreshold)
+    Parameters (those in PARAMETERS can be set in pilottone.json as medianFilter<Parameter>, e.g.
+    medianFilterMinWindowS):
+      trMs:              the sequence TR in ms (part of the shared interface; not used by this method)
+      refChanIdx:        the reference channel for relative phase and amplitude (pilottone.json refChanIdx)
+      minWindowS:        window length in seconds (default 3)
+      minLinesPerWindow: windows with fewer lines have no median (default 5)
+      maxGapS:           longest gap in seconds between the end of the compared window and the start of the
+                         scored one; None (default) or <= 0 means no limit
+      minQuality:        lines whose quality is below this are skipped (pilottone.py passes
+                         ptoneQualityThreshold)
 
     Relative amplitude is ignored.  Relative phase isn't unwrapped: it relies on pilottone.py setting the
     phase midpoint from a line with the tone (ptoneQualityThreshold), which keeps it continuous in practice.
@@ -51,15 +58,26 @@ class MedianFilter:
 
     name = 'medianFilter'
 
-    MIN_LINES_PER_WINDOW = 5        # Windows with fewer lines have no median (e.g. during a gap)
+    # Parameters that can be set in pilottone.json (as medianFilter<Parameter>), with their defaults
+    PARAMETERS = {
+        'minWindowS':        3.0,
+        'minLinesPerWindow': 5,
+        'maxGapS':           None,
+    }
 
-    def __init__(self, trMs=None, refChanIdx=0, minWindowS=3.0, minQuality=0.0):
+    def __init__(self, trMs=None, refChanIdx=0, minWindowS=3.0, minLinesPerWindow=5, maxGapS=None, minQuality=0.0):
         minWindowS = float(minWindowS)
         if minWindowS <= 0:
             raise ValueError("minWindowS must be positive (got %s)" % minWindowS)
+        minLinesPerWindow = int(minLinesPerWindow)
+        if minLinesPerWindow < 1:
+            raise ValueError("minLinesPerWindow must be at least 1 (got %s)" % minLinesPerWindow)
+        maxGapS = None if (maxGapS is None or float(maxGapS) <= 0) else float(maxGapS)
         self.trMs = trMs
         self.refChanIdx = int(refChanIdx)
         self.minWindowS = minWindowS
+        self.minLinesPerWindow = minLinesPerWindow
+        self.maxGapS = maxGapS
         self.minQuality = float(minQuality)
         self.windowMs = minWindowS * 1000.0
 
@@ -105,10 +123,12 @@ class MedianFilter:
     def complete_window(self):
         bounds = self.window_bounds(self.windowIndex)
         phases, self.windowPhases = self.windowPhases, []
-        if len(phases) < self.MIN_LINES_PER_WINDOW:
+        if len(phases) < self.minLinesPerWindow:
             return None                             # Too few lines: keep comparing with the last window with data
         median = np.median(np.stack(phases), axis=0)
         score = None
+        if self.prevMedian is not None and self.maxGapS is not None and bounds[0] - self.prevWindow[1] > self.maxGapS * 1000:
+            self.prevMedian = None                  # Too long since the last window with data: start again
         if self.prevMedian is not None:
             # The reference channel (relative phase always 0) doesn't count
             change = np.delete(median - self.prevMedian, self.refChanIdx)

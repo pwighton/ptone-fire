@@ -49,6 +49,17 @@ def test_create():
         create_bulk_motion('medianFilter', 1900.0, 0, {'windowS': 2})
     with pytest.raises(ValueError, match='minWindowS must be positive'):
         create_bulk_motion('medianFilter', 1900.0, 0, {'minWindowS': 0})
+    with pytest.raises(ValueError, match='minLinesPerWindow must be at least 1'):
+        create_bulk_motion('medianFilter', 1900.0, 0, {'minLinesPerWindow': 0})
+
+def test_parameters_and_defaults():
+    # The parameters pilottone.json can set (as medianFilter<Parameter>), with defaults matching the constructor
+    assert MedianFilter.PARAMETERS == {'minWindowS': 3.0, 'minLinesPerWindow': 5, 'maxGapS': None}
+    m = create_bulk_motion('medianFilter', None, 0)
+    assert (m.minWindowS, m.minLinesPerWindow, m.maxGapS) == (3.0, 5, None)
+    # maxGapS <= 0 means no limit
+    assert create_bulk_motion('medianFilter', None, 0, {'maxGapS': 0}).maxGapS is None
+    assert create_bulk_motion('medianFilter', None, 0, {'maxGapS': '7.5'}).maxGapS == 7.5
 
 # ----- Windows and scores ------------------------------------------------------------------------
 
@@ -143,6 +154,27 @@ def test_window_with_too_few_lines_is_skipped():
     # 3-6 s has too few lines: 6-9 s is compared with 0-3 s
     assert [t[i] for i, _ in scores] == [9000]
     assert m.comparedWindow == (0, 3000)
+
+def test_min_lines_per_window_parameter():
+    t, ph = lines(durationS=12.0, spacingMs=10.0)
+    keep = (t < 3000) | (t >= 6000) | (np.arange(len(t)) % 100 == 0)   # 3-6 s: only 3 lines
+    t, ph = t[keep], ph[keep]
+    m = create_bulk_motion('medianFilter', None, 0, {'minWindowS': 3, 'minLinesPerWindow': 3})
+    scores = run(m, t, ph)
+    # With a minimum of 3 lines, the 3-6 s window counts
+    assert [t[i] for i, _ in scores] == [6000, 9000]
+
+@pytest.mark.parametrize('maxGapS, bridged', [(None, True), (10, True), (5, False)])
+def test_max_gap(maxGapS, bridged):
+    # TSE-like: lines only in 0-3, 9-12 and 18-21 s; 1 s windows, so a 6 s gap between bursts
+    gaps = [(3, 9), (12, 18)]
+    t, ph = lines(durationS=21.0, gaps=gaps)
+    m = create_bulk_motion('medianFilter', 9000.0, 0, {'minWindowS': 1, 'maxGapS': maxGapS})
+    scoreTimes = [t[i] for i, _ in run(m, t, ph)]
+    # Within a burst: windows ending at 2, 3 (scored on the line at 9 s, the next line), ...
+    firstInSecondBurst = 10000.0                     # The 9-10 s window, scored on the line at 10 s
+    assert (firstInSecondBurst in scoreTimes) == bridged
+    assert 11000.0 in scoreTimes                     # Within the burst: always scored
 
 # ----- Lines the method skips ---------------------------------------------------------------------
 
