@@ -25,8 +25,11 @@ def make_result(path, protocol='t2_fl2d_tra_hemo--nm-pt', durationS=60.0, spacin
         ph[t - t[0] >= moveAtS * 1000, 1:] += phaseStep
         pos[t - t[0] >= (moveAtS + trackerLagS) * 1000, 0] += mmStep
     ph[:, 0] = 0.0
+    # Sequence type as the scanner gives it: TurboSpinEcho for the TSE, Flash for FLASH, SWI and MPRAGE
+    sequenceType = 'TurboSpinEcho' if 'tse' in protocol.lower() else 'Flash'
     header = ('<ismrmrdHeader><measurementInformation><protocolName>%s</protocolName></measurementInformation>'
-              '<sequenceParameters><TR>597.0</TR></sequenceParameters></ismrmrdHeader>' % protocol)
+              '<sequenceParameters><TR>597.0</TR><sequence_type>%s</sequence_type></sequenceParameters></ismrmrdHeader>'
+              % (protocol, sequenceType))
     np.savez(path, time_ms=t, quality=np.full(len(t), 0.97), relative_phase=ph, relative_amplitude=np.ones_like(ph),
              settings=np.array(json.dumps({'refChanIdx': 0, 'ptoneQualityThreshold': 0.5})), mrd_header=np.array(header),
              tcl_Tx=pos[:, 0], tcl_Ty=pos[:, 1], tcl_Tz=pos[:, 2], tcl_Rx=rot[:, 0], tcl_Ry=rot[:, 1], tcl_Rz=rot[:, 2])
@@ -192,24 +195,25 @@ def test_evaluate_with_config(tmp_path):
     make_result(tmp_path / 's1--MID00001-a.npz', protocol='t2_tse_tra_dark-fluid--nm-pt')
     make_result(tmp_path / 's1--MID00002-b.npz', protocol='t2_fl2d_tra_hemo--nm-pt')
     config = {'parameters': {'medianFilterWindowS': '3',
-                             'protocolOverrides': [{'match': '*TSE*', 'medianFilterWindowS': '2'}]}}
+                             'protocolOverrides': [{'matchProtocolName': '*TSE*', 'medianFilterWindowS': '2'},
+                                                   {'matchSequenceType': 'Flash', 'medianFilterMinLinesPerWindow': '4'}]}}
     windows, scans = ev.evaluate([str(tmp_path)], config=config)
     byMid = {s['mid']: s for s in scans}
-    assert byMid[1]['protocolOverride'] == '*TSE*' and json.loads(byMid[1]['scanParams']) == {'windowS': '2'}
-    assert byMid[2]['protocolOverride'] == '' and json.loads(byMid[2]['scanParams']) == {'windowS': '3'}
+    assert byMid[1]['protocolOverrides'] == '0' and json.loads(byMid[1]['scanParams']) == {'windowS': '2'}
+    assert byMid[2]['protocolOverrides'] == '1' and json.loads(byMid[2]['scanParams']) == {'windowS': '3', 'minLinesPerWindow': '4'}
     # 60 s of lines: 2 s windows give 28 scores (29 complete windows), 3 s windows 18
     assert byMid[1]['numScores'] == 28 and byMid[2]['numScores'] == 18
-    assert all(w['protocolOverride'] == '*TSE*' for w in windows if w['mid'] == 1)
+    assert all(w['protocolOverrides'] == '0' for w in windows if w['mid'] == 1)
     # --param applies on top, to every scan
     windows, scans = ev.evaluate([str(tmp_path)], params={'windowS': '5'}, config=config)
-    assert all(json.loads(s['scanParams']) == {'windowS': '5'} for s in scans)
+    assert [json.loads(s['scanParams'])['windowS'] for s in scans] == ['5', '5']
 
 def test_command_line_config(tmp_path):
     pytest.importorskip('pandas')
     data = tmp_path / 'data'; data.mkdir()
     make_result(data / 's1--MID00001-a.npz', protocol='TRA_SWI--m-pt', moveAtS=31.0)
     with open(tmp_path / 'config.json', 'w') as f:
-        json.dump({'parameters': {'protocolOverrides': [{'match': '*swi*', 'medianFilterWindowS': '5'}]}}, f)
+        json.dump({'parameters': {'protocolOverrides': [{'matchProtocolName': '*swi*', 'medianFilterWindowS': '5'}]}}, f)
     out = tmp_path / 'out'
     result = subprocess.run([sys.executable, os.path.join(repoDir, 'ptone', 'bulk_motion_eval.py'), str(data),
                              '--out-dir', str(out), '--config', str(tmp_path / 'config.json')],
@@ -217,4 +221,4 @@ def test_command_line_config(tmp_path):
     assert result.returncode == 0, result.stderr
     import pandas
     windows = pandas.read_csv(out / 'windows.csv')
-    assert set(windows['protocolOverride']) == {'*swi*'} and set(windows['scanParams']) == {'{"windowS": "5"}'}
+    assert set(windows['protocolOverrides']) == {0} and set(windows['scanParams']) == {'{"windowS": "5"}'}

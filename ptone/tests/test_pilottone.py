@@ -253,43 +253,57 @@ def test_get_bulk_motion_params():
     with pytest.raises(ValueError, match='Unknown bulkMotionMethod'):
         pilottone.get_bulk_motion_params(config, 'other')
 
-# ----- Settings by protocol name (protocolOverrides) ---------------------------------------------
+# ----- Settings by protocol name and sequence type (protocolOverrides) ---------------------------
 
-def header_with_protocol(protocolName):
-    return SimpleNamespace(measurementInformation=SimpleNamespace(measurementID='1_2_7', protocolName=protocolName))
+def header_with_protocol(protocolName, sequenceType=None):
+    return SimpleNamespace(measurementInformation=SimpleNamespace(measurementID='1_2_7', protocolName=protocolName),
+                           sequenceParameters=SimpleNamespace(TR=[9000.0], sequence_type=sequenceType))
 
-OVERRIDES = [{'match': '*tse*', 'medianFilterWindowS': '2'}, {'match': '*swi*', 'medianFilterWindowS': '5'}]
+OVERRIDES = [{'matchProtocolName': '*tse*', 'medianFilterWindowS': '2'},
+             {'matchProtocolName': '*swi*', 'medianFilterWindowS': '5'},
+             {'matchSequenceType': 'TurboSpinEcho', 'medianFilterMinLinesPerWindow': '10'}]
 
-def test_protocol_override_applied(tmp_path, caplog):
+def test_protocol_overrides_applied(tmp_path, caplog):
     caplog.set_level('INFO')
-    d, settings, _ = run_moving_tone(tmp_path, {'protocolOverrides': OVERRIDES}, header=header_with_protocol('t2_TSE_tra--m-pt'))
-    assert settings['medianFilterWindowS'] == 2.0
+    d, settings, _ = run_moving_tone(tmp_path, {'protocolOverrides': OVERRIDES},
+                                     header=header_with_protocol('t2_TSE_tra--m-pt', 'TurboSpinEcho'))
+    # Both the protocol name rule and the sequence type rule apply
+    assert settings['medianFilterWindowS'] == 2.0 and settings['medianFilterMinLinesPerWindow'] == 10
     assert settings['bulkMotionNumScores'] == 5                     # 2 s windows, as in test_bulk_motion_parameters_from_config
-    assert settings['protocolName'] == 't2_TSE_tra--m-pt'
-    assert settings['protocolOverrideIndex'] == 0 and settings['protocolOverrideMatch'] == '*tse*'
-    assert settings['protocolOverrideSettings'] == {'medianFilterWindowS': '2'}
+    assert settings['protocolName'] == 't2_TSE_tra--m-pt' and settings['sequenceType'] == 'TurboSpinEcho'
+    assert settings['protocolOverrideIndices'] == [0, 2]
+    assert settings['protocolOverrideSettings'] == {'medianFilterWindowS': '2', 'medianFilterMinLinesPerWindow': '10'}
     import json
     assert json.loads(str(d['config']))['parameters']['protocolOverrides'] == OVERRIDES   # Saved as received
-    assert "Protocol 't2_TSE_tra--m-pt' matches protocolOverrides rule 0 ('*tse*'), which sets: medianFilterWindowS = 2" in caplog.text
+    label = "Protocol 't2_TSE_tra--m-pt', sequence type 'TurboSpinEcho' matches protocolOverrides "
+    assert label + "rule 0 (matchProtocolName '*tse*'), which sets medianFilterWindowS = 2" in caplog.text
+    assert label + "rule 2 (matchSequenceType 'TurboSpinEcho'), which sets medianFilterMinLinesPerWindow = 10" in caplog.text
+    assert "Settings from protocolOverrides: medianFilterWindowS = 2, medianFilterMinLinesPerWindow = 10" in caplog.text
 
-def test_protocol_override_no_match(tmp_path, caplog):
+def test_protocol_overrides_no_match(tmp_path, caplog):
     caplog.set_level('INFO')
     d, settings, _ = run_moving_tone(tmp_path, {'protocolOverrides': OVERRIDES, 'medianFilterWindowS': '4'},
-                                     header=header_with_protocol('t2_fl2d_tra_hemo--nm-pt'))
+                                     header=header_with_protocol('t2_fl2d_tra_hemo--nm-pt', 'Flash'))
     assert settings['medianFilterWindowS'] == 4.0
-    assert settings['protocolOverrideMatch'] is None and settings['protocolOverrideSettings'] is None
-    assert "Protocol 't2_fl2d_tra_hemo--nm-pt' matches no protocolOverrides rule" in caplog.text
+    assert settings['protocolOverrideIndices'] == [] and settings['protocolOverrideSettings'] is None
+    assert "Protocol 't2_fl2d_tra_hemo--nm-pt', sequence type 'Flash' matches no protocolOverrides rule" in caplog.text
 
-def test_protocol_override_any_setting(tmp_path):
+def test_protocol_overrides_any_setting(tmp_path):
     # A rule can set any setting, e.g. turn the bulk motion score off
-    d, settings, _ = run_moving_tone(tmp_path, {'protocolOverrides': [{'match': '*mprage*', 'bulkMotionMethod': 'none'}]},
-                                     header=header_with_protocol('t1_mprage--nm-pt'))
+    rules = [{'matchSequenceType': 'Flash', 'matchProtocolName': '*mprage*', 'bulkMotionMethod': 'none'}]
+    d, settings, _ = run_moving_tone(tmp_path, {'protocolOverrides': rules}, header=header_with_protocol('t1_mprage--nm-pt', 'Flash'))
     assert settings['bulkMotionMethod'] == 'none' and 'bulk_motion_score' not in d.files
 
-def test_protocol_override_malformed(tmp_path):
+def test_protocol_overrides_malformed(tmp_path):
     # Like a bad flag name: the error is logged and nothing is analysed
-    d, _, _ = run_moving_tone(tmp_path, {'protocolOverrides': [{'medianFilterWindowS': '2'}]},
+    d, _, _ = run_moving_tone(tmp_path, {'protocolOverrides': [{'match': '*tse*', 'medianFilterWindowS': '2'}]},
                               header=header_with_protocol('t2_tse'))
     assert d is None
     log = [f for f in os.listdir(tmp_path) if f.endswith('.txt')][0]
-    assert "'match' pattern" in open(tmp_path / log).read()
+    assert "now 'matchProtocolName'" in open(tmp_path / log).read()
+
+def test_header_sequence_type():
+    assert pilottone.get_header_sequence_type(header_with_protocol('x', 'Flash')) == 'Flash'
+    assert pilottone.get_header_sequence_type(header_with_protocol('x')) is None
+    assert pilottone.get_header_sequence_type(None) is None
+    assert pilottone.get_header_sequence_type('not valid MRD XML') is None

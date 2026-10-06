@@ -9,7 +9,7 @@ import numpy as np
 import mrdhelper
 from ptone.estimate import analyze_line
 from ptone.bulk_motion import METHODS as bulkMotionMethods, create_bulk_motion, config_params
-from ptone.protocol_overrides import apply_protocol_overrides
+from ptone.protocol_overrides import apply_protocol_overrides, describe_rule, get_rules
 from ptone.tx_frequency import check_band_position_and_side, ptone_tx_frequency
 from ptone.usrp_transmitter import USRPTransmitter
 
@@ -131,6 +131,14 @@ def get_header_protocol_name(mrdHeader):
         protocolName = None
     return protocolName or None
 
+def get_header_sequence_type(mrdHeader):
+    # Sequence type from the MRD header (sequenceParameters.sequence_type, e.g. 'TurboSpinEcho', 'Flash'), or None
+    try:
+        sequenceType = mrdHeader.sequenceParameters.sequence_type
+    except AttributeError:
+        sequenceType = None
+    return sequenceType or None
+
 def get_protocol_name(mrdHeader):
     # Protocol name from the MRD header, with characters other than letters, digits, '.', '_' and '-'
     # replaced by '_' so it's safe in a filename
@@ -173,18 +181,19 @@ def get_git_commit():
 def process(connection, config, mrdHeader):
     results = []  # Per-line analysis results
 
-    # Settings for this scan's protocol: the first protocolOverrides rule whose pattern matches the protocol
-    # name replaces the settings it lists (see ptone/protocol_overrides.py).  Done before any setting is read,
-    # so a rule can set any of them.  configReceived is the config as received, saved with the results.
-    # Malformed rules are an error once logging to this scan's log file has started (see below)
+    # Settings for this scan: every protocolOverrides rule matching the scan's protocol name and/or sequence
+    # type replaces the settings it lists, in list order (see ptone/protocol_overrides.py).  Done before any
+    # setting is read, so a rule can set any of them.  configReceived is the config as received, saved with
+    # the results.  Malformed rules are an error once logging to this scan's log file has started (see below)
     configReceived = config
     protocolOverrideError = None
     try:
-        config, protocolOverride = apply_protocol_overrides(config, get_header_protocol_name(mrdHeader))
+        config, protocolOverride = apply_protocol_overrides(config, get_header_protocol_name(mrdHeader),
+                                                            get_header_sequence_type(mrdHeader))
     except ValueError as e:
         protocolOverrideError = str(e)
-        protocolOverride = {'protocolName': get_header_protocol_name(mrdHeader), 'protocolOverrideIndex': None,
-                            'protocolOverrideMatch': None, 'protocolOverrideSettings': None}
+        protocolOverride = {'protocolName': get_header_protocol_name(mrdHeader), 'sequenceType': get_header_sequence_type(mrdHeader),
+                            'protocolOverrideIndices': [], 'protocolOverrideSettings': None}
 
     # Output file for the results
     outputFolder   = mrdhelper.get_json_config_param(config, 'outputFolder',   default=defaultOutputFolder,   type='str')
@@ -207,12 +216,16 @@ def process(connection, config, mrdHeader):
     logging.getLogger().addHandler(logHandler)
 
     logging.info("Config: \n%s", configReceived)
-    if protocolOverride['protocolOverrideMatch'] is not None:
-        logging.info("Protocol '%s' matches protocolOverrides rule %d ('%s'), which sets: %s", protocolOverride['protocolName'],
-                     protocolOverride['protocolOverrideIndex'], protocolOverride['protocolOverrideMatch'],
-                     ', '.join('%s = %s' % kv for kv in protocolOverride['protocolOverrideSettings'].items()))
-    elif protocolOverrideError is None:
-        logging.info("Protocol '%s' matches no protocolOverrides rule", protocolOverride['protocolName'])
+    if protocolOverrideError is None:
+        scanLabel = "Protocol '%s', sequence type '%s'" % (protocolOverride['protocolName'], protocolOverride['sequenceType'])
+        if protocolOverride['protocolOverrideIndices']:
+            rules = get_rules(configReceived)
+            for i in protocolOverride['protocolOverrideIndices']:
+                logging.info("%s matches protocolOverrides %s", scanLabel, describe_rule(i, rules[i]))
+            logging.info("Settings from protocolOverrides: %s",
+                         ', '.join('%s = %s' % kv for kv in protocolOverride['protocolOverrideSettings'].items()))
+        else:
+            logging.info("%s matches no protocolOverrides rule", scanLabel)
     logging.info("mrdHeader: \n%s", mrdHeader)
     logging.info("Results will be saved to %s", outputFilePath)
     logging.info("Log will be saved to %s", logFilePath)
@@ -263,7 +276,8 @@ def process(connection, config, mrdHeader):
         'ptoneQualityThreshold':    ptoneQualityThreshold,
         'phaseMidpointScanCounter': None,   # Line the phase range midpoint was set from (scan_counter)
     }
-    # The protocol name and the protocolOverrides rule used (index, pattern and the settings it set; None if none)
+    # The protocol name and sequence type, the protocolOverrides rules that matched (indices) and the settings
+    # they set (None if none)
     settings.update(protocolOverride)
 
 

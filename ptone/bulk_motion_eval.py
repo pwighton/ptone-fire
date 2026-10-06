@@ -20,7 +20,7 @@
 #
 # Method parameters: the method's defaults, or with --config a pilottone.py JSON config (e.g. pilottone.json):
 # each scan gets the method's parameters from it (<method><Parameter> settings, e.g. medianFilterWindowS)
-# after applying its protocolOverrides rules to the scan's protocol name, exactly as pilottone.py does
+# after applying its protocolOverrides rules to the scan's protocol name and sequence type, exactly as pilottone.py does
 # (ptone/protocol_overrides.py).  --param and --sweep values apply on top, to every scan.
 #
 # Results are grouped by sequence (from the protocol name: TSE, FLASH, SWI, MPRAGE, else the protocol
@@ -87,6 +87,11 @@ def protocol_name(d):
     m = re.search(r'<protocolName>(.*?)</protocolName>', str(d['mrd_header'])) if 'mrd_header' in d.files else None
     return html.unescape(m.group(1)) if m else ''
 
+def sequence_type(d):
+    # The sequence type (e.g. 'TurboSpinEcho', 'Flash') from the saved MRD header, or None
+    m = re.search(r'<sequence_type>(.*?)</sequence_type>', str(d['mrd_header'])) if 'mrd_header' in d.files else None
+    return html.unescape(m.group(1)).strip() if m else None
+
 def sequence_group(protocol):
     """The sequence group for a protocol name (see GROUP_PATTERNS), else the protocol without its motion suffix."""
     for group, pattern in GROUP_PATTERNS:
@@ -118,7 +123,7 @@ def load_scan(npzPath):
         mid = re.search(r'MID(\d+)', name)
         return dict(
             path=npzPath, session=name.split('--')[0], mid=int(mid.group(1)) if mid else None,
-            protocol=protocol, group=sequence_group(protocol), kind=motion_kind(protocol), trMs=tr_ms(d),
+            protocol=protocol, sequenceType=sequence_type(d), group=sequence_group(protocol), kind=motion_kind(protocol), trMs=tr_ms(d),
             refChanIdx=int(settings.get('refChanIdx', 0)),
             qualityThreshold=float(settings.get('ptoneQualityThreshold', 0.5)),
             timeMs=d['time_ms'].astype(float), quality=d['quality'].astype(float),
@@ -200,11 +205,13 @@ def evaluate(paths, method='medianFilter', params=None, lagS=LAG_S, minQuality=N
     Score every results file with TCL data under paths, except those from sessions in excludeSessions
     (session = the start of the filename, e.g. ptoneH20260429).  Returns (windows, scans): one dict per score,
     with 'size' (the RMS deviation, mm), 'moved' (size >= moved) and 'still' (size < still) added; and one
-    dict per scan with its first-score time and number of scores.  Both include the protocolOverrides rule
-    used ('protocolOverride', the pattern, '' if none) and the method parameters used ('scanParams').
+    dict per scan with its first-score time and number of scores.  Both include the protocolOverrides rules
+    that matched ('protocolOverrides', their indices, e.g. '0;3', '' if none) and the method parameters used
+    ('scanParams').
 
     config: a pilottone.py JSON config ({'parameters': {...}}), or None.  If given, each scan's method
-    parameters come from it, after applying its protocolOverrides rules to the scan's protocol name; params
+    parameters come from it, after applying its protocolOverrides rules to the scan's protocol name and
+    sequence type; params
     apply on top.
     """
     windows, scans = [], []
@@ -212,14 +219,14 @@ def evaluate(paths, method='medianFilter', params=None, lagS=LAG_S, minQuality=N
         scan = load_scan(path)
         if scan is None or scan['session'] in excludeSessions:
             continue
-        scanParams, override = dict(params or {}), None
+        scanParams, override = dict(params or {}), ''
         if config is not None:
-            scanConfig, applied = apply_protocol_overrides(config, scan['protocol'])
+            scanConfig, applied = apply_protocol_overrides(config, scan['protocol'], scan['sequenceType'])
             scanParams = dict(config_params(scanConfig, method) or {}, **scanParams)
-            override = applied['protocolOverrideMatch']
+            override = ';'.join(str(i) for i in applied['protocolOverrideIndices'])
         rows = score_scan(scan, method, scanParams, lagS, minQuality, radius, centre)
         for r in rows:
-            r['protocolOverride'] = override or ''
+            r['protocolOverrides'] = override
             r['scanParams'] = json.dumps(scanParams, sort_keys=True)
             r['size'] = r['trackerRmsMm']
             r['moved'] = bool(r['size'] >= moved)
@@ -227,7 +234,7 @@ def evaluate(paths, method='medianFilter', params=None, lagS=LAG_S, minQuality=N
         windows += rows
         scans.append(dict(session=scan['session'], mid=scan['mid'], group=scan['group'], kind=scan['kind'],
                           firstScoreS=rows[0]['windowEndS'] if rows else np.nan, numScores=len(rows),
-                          protocolOverride=override or '', scanParams=json.dumps(scanParams, sort_keys=True)))
+                          protocolOverrides=override, scanParams=json.dumps(scanParams, sort_keys=True)))
     return windows, scans
 
 # ----- Summaries ---------------------------------------------------------------------------------
