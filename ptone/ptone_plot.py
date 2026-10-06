@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 # Plot the pilot tone results saved by pilottone.py: for each channel, amplitude and phase against the
 # scanner's line number, with the quality metric and optionally TCL head motion overlaid: from a motion
-# file (--tcl), or from the TCL data saved in the results file, if it has any.
+# file (--tcl), or from the TCL data saved in the results file, if it has any.  If the results file has a
+# bulk motion score (bulk_motion_score), it's plotted in a row above the channels.
 #
 # --tcl MOTFILE --add-tcl also saves the motion, matched to each line, into the results file (see
 # ptone/tcl.py add_tcl_to_npz), e.g. to add tracker data to a scan pilottone.py plotted at the scanner.
@@ -126,14 +127,39 @@ def plot_npz(npzPath, pngPath=None, tclMotPath=None, addTcl=False, channels=None
     refChan = settings.get('refChanIdx')
     txStartLine = settings.get('ptoneTxStartScanCounter')
 
+    # Bulk motion score: one value per window, on the line that completed it (NaN on other lines)
+    score = d['bulk_motion_score'] if 'bulk_motion_score' in d.files else None
+    scoreRows = 1 if score is not None else 0
+
     featureCols = ['amplitude', 'phase'] if plot == 'both' else [plot]
     numCols = len(featureCols)
-    figHeightIn = 3 * len(chanIndices) + 1
+    figHeightIn = 3 * (len(chanIndices) + scoreRows) + 1
     fig = Figure(figsize=(8 * numCols, figHeightIn))
     FigureCanvasAgg(fig)
-    axes = fig.subplots(len(chanIndices), numCols, sharex=True, squeeze=False)
+    axes = fig.subplots(len(chanIndices) + scoreRows, numCols, sharex=True, squeeze=False)
+
+    if score is not None:
+        method = settings.get('bulkMotionMethod', '')
+        hasScore = np.isfinite(score)
+        for col in range(numCols):
+            ax = axes[0, col]
+            ax.plot(lineNumber[hasScore], score[hasScore], color='black', marker='o', label='Bulk motion score')
+            ax.set_ylabel('Bulk motion score (rad)')
+            ax.set_ylim(bottom=0)
+            ax.set_title('Bulk motion score%s: %d scores' % (' (%s)' % method if method else '', np.sum(hasScore)))
+            extraLines = []
+            if motion is not None:
+                axM = ax.twinx()
+                axM.plot(lineNumber, motion, color='tab:red', label='3D motion framewise (mm)', alpha=0.7)
+                axM.set_ylabel('3D motion framewise (mm)', color='tab:red')
+                axM.tick_params(axis='y', labelcolor='tab:red')
+                extraLines += axM.get_lines()
+            if legendLoc and legendLoc.lower() != 'none':
+                allLines = ax.get_lines() + extraLines
+                ax.legend(allLines, [l.get_label() for l in allLines], loc=legendLoc)
 
     for row, chan in enumerate(chanIndices):
+        row += scoreRows
         chanLabel = 'Channel %d%s' % (chan, ' (reference)' if chan == refChan else '')
         for col, feature in enumerate(featureCols):
             ax = axes[row, col]

@@ -8,6 +8,7 @@ import subprocess
 import numpy as np
 import mrdhelper
 from ptone.estimate import analyze_line
+from ptone.bulk_motion import METHODS as bulkMotionMethods, create_bulk_motion
 from ptone.tx_frequency import check_band_position_and_side, ptone_tx_frequency
 from ptone.usrp_transmitter import USRPTransmitter
 
@@ -38,6 +39,11 @@ ptonePlotScript  = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'pto
 # the share of the line's filtered signal in its strongest component, i.e. the tone) is at least this have
 # the tone present.  Without the tone it's around 0.05; with it, above about 0.9
 defaultPtoneQualityThreshold = 0.5
+
+# Default for bulkMotionMethod in pilottone.json: the real-time bulk head motion score (ptone/bulk_motion.py),
+# or 'none' for no score.  Each method's parameters are set as <methodName><Parameter>, e.g.
+# medianFilterMinWindowS (see get_bulk_motion_params())
+defaultBulkMotionMethod = 'medianFilter'
 
 # Python that runs ptone/tx_waveforms.py.  It needs UHD, which can't be installed in this environment
 # (see ptone/environment-tx.yml), so default to the 'ptone-tx' conda environment alongside this one
@@ -95,6 +101,29 @@ def get_flags_config_param(config, key, default):
         raise ValueError("Unknown ISMRMRD flag(s) in '%s': %s" % (key, ', '.join(unknown)))
 
     return [getattr(ismrmrd, name) for name in names], names
+
+def get_bulk_motion_params(config, method):
+    # The bulk motion method's parameters from the JSON config, each named <method><Parameter> (e.g.
+    # medianFilterMinWindowS for medianFilter's minWindowS), for every parameter in the method's PARAMETERS.
+    # Absent or empty parameters are left out, so the method uses its own default.  Values are passed as
+    # given (the method converts and checks them).  None for method 'none'; ValueError for an unknown method
+    if method == 'none':
+        return None
+    if method not in bulkMotionMethods:
+        raise ValueError("Unknown bulkMotionMethod %r (known: %s, or 'none')" % (method, ', '.join(sorted(bulkMotionMethods))))
+    params = {}
+    for name in bulkMotionMethods[method].PARAMETERS:
+        value = mrdhelper.get_json_config_param(config, method + name[0].upper() + name[1:], default=None)
+        if value is not None and str(value).strip() != '':
+            params[name] = value
+    return params
+
+def get_tr_ms(mrdHeader):
+    # The sequence TR (ms) from the MRD header, or None if it has none
+    try:
+        return float(mrdHeader.sequenceParameters.TR[0])
+    except (AttributeError, IndexError, TypeError, ValueError):
+        return None
 
 def is_image_line(acq, skipFlags, dontSkipFlags):
     # Lines with any dontSkipFlags set are image lines; otherwise lines with any skipFlags set are not
@@ -233,6 +262,27 @@ def process(connection, config, mrdHeader):
         logging.info("Not starting the transmitter on lines with flags: %s", ', '.join(ptoneTxFreqSkipFlagNames))
         settings['ptoneTxFreqSkipFlags'] = ptoneTxFreqSkipFlagNames
 
+        # Real-time bulk head motion score (ptone/bulk_motion.py).  Every analysed line is passed to the
+        # method, which returns a score now and then (medianFilter: one per window).  Lines below
+        # ptoneQualityThreshold (no tone) are left out by the method (minQuality)
+        bulkMotionMethod = mrdhelper.get_json_config_param(config, 'bulkMotionMethod', default=defaultBulkMotionMethod, type='str').strip()
+        bulkMotionParams = get_bulk_motion_params(config, bulkMotionMethod)
+        settings['bulkMotionMethod'] = bulkMotionMethod
+        bulkMotion = None
+        if bulkMotionParams is None:
+            logging.info("Bulk motion score: off (bulkMotionMethod 'none')")
+        else:
+            trMs = get_tr_ms(mrdHeader)
+            bulkMotion = create_bulk_motion(bulkMotionMethod, trMs, refChanIdx, dict(bulkMotionParams, minQuality=ptoneQualityThreshold))
+            # Parameters actually used, by their pilottone.json names (with the method's defaults filled in)
+            for name in bulkMotionMethods[bulkMotionMethod].PARAMETERS:
+                settings[bulkMotionMethod + name[0].upper() + name[1:]] = getattr(bulkMotion, name)
+            logging.info("Bulk motion score: %s, %s (TR %s ms, reference channel %d, lines with quality >= %g)", bulkMotionMethod,
+                         ', '.join('%s %s' % (name, getattr(bulkMotion, name)) for name in bulkMotionMethods[bulkMotionMethod].PARAMETERS),
+                         trMs, refChanIdx, ptoneQualityThreshold)
+        settings['bulkMotionNumScores'] = 0
+        settings['bulkMotionError'] = None     # Set if the method fails during the scan (the score then stops)
+
         # Pilot tone transmitter.  The frequency to broadcast (ptoneTxFreqHz) is ptoneTxOverrideFreqHz if
         # set, otherwise it's calculated by ptone_tx_frequency() from ptoneTxBandPosition and ptoneTxSide.
         # The calculation needs the first imaging line, so ptoneTxFreqHz is set when that arrives
@@ -343,6 +393,23 @@ def process(connection, config, mrdHeader):
             result = analyze_line(item, refChanIdx, phaseMidpoint)
             results.append(result)
 
+            # Bulk motion score: NaN except on lines that complete a window with a score.  A failure in
+            # the method is logged and stops the score, but not the rest of the analysis
+            if bulkMotionParams is not None:
+                result['bulk_motion_score'] = np.nan
+                if bulkMotion is not None:
+                    try:
+                        score = bulkMotion.update(result['time_ms'], result['relative_phase'], result['relative_amplitude'], result['quality'])
+                    except Exception as e:
+                        logging.exception("Bulk motion score failed; no more scores for this scan")
+                        settings['bulkMotionError'] = str(e)
+                        bulkMotion = None
+                        score = None
+                    if score is not None:
+                        result['bulk_motion_score'] = score
+                        settings['bulkMotionNumScores'] += 1
+                        logging.info("Bulk motion score %.4f rad (line scan_counter %d)", score, item.scan_counter)
+
             if phaseMidpoint is None and result['quality'] >= ptoneQualityThreshold:
                 phaseMidpoint = result['relative_phase']
                 settings['phaseMidpointScanCounter'] = int(item.scan_counter)
@@ -393,6 +460,13 @@ def start_plot(npzPath, logFilePath):
     except Exception as e:
         logging.error("Could not start plotting %s: %s", npzPath, e)
 
+def bulk_motion_arrays(results):
+    # bulk_motion_score for np.savez, if the bulk motion score was on (bulkMotionMethod not 'none'): one value
+    # per analysed line, the score on the line that completed a window, NaN elsewhere (radians for medianFilter)
+    if 'bulk_motion_score' not in results[0]:
+        return {}
+    return {'bulk_motion_score': np.array([r['bulk_motion_score'] for r in results], dtype=float)}
+
 def save_results(results, filePath, timestamp, config, settings, mrdHeader, lastScanCounter=None):
     # Returns filePath, or None if there was nothing to save
     if len(results) == 0:
@@ -413,6 +487,7 @@ def save_results(results, filePath, timestamp, config, settings, mrdHeader, last
              quality      = np.array([r['quality']      for r in results]),
              relative_amplitude = np.stack([r['relative_amplitude'] for r in results]),  # [lines, channels]
              relative_phase     = np.stack([r['relative_phase']     for r in results]),  # [lines, channels]
+             **bulk_motion_arrays(results),
              timestamp    = np.array(timestamp),                               # Processing start, YYYYMMDD-HHMMSS-mmm
              config       = np.array(json.dumps(config, indent=4)),            # Config as received, as JSON text
              settings     = np.array(json.dumps(settings, indent=4)),          # Settings actually used, as JSON text

@@ -147,3 +147,108 @@ def test_midpoint_quality_threshold_zero_uses_first_line(tmp_path):
     d, settings = run_noise_then_tone(tmp_path, threshold=0)
     assert settings['ptoneQualityThreshold'] == 0
     assert settings['phaseMidpointScanCounter'] == 1
+
+# ----- Bulk motion score -------------------------------------------------------------------------
+
+def run_moving_tone(tmp_path, params=None, numNoise=10, durationS=14.0, stepAtS=7.0, stepRad=0.2, header=None):
+    # numNoise lines without the tone, then durationS of lines (one per 40 ms) with the tone, whose phase on
+    # channels 1-3 steps by stepRad relative to channel 0 stepAtS after the tone appears (the head moving).
+    # Returns the saved results, their settings, and the results file's path (None if nothing was saved)
+    import ismrmrd, json
+    rng = np.random.default_rng(5)
+    acqs = FakeConnection()
+    n = np.arange(256)
+    numTone = int(durationS * 1000 / 40)
+    for i in range(numNoise + numTone):
+        noise = 0.01 * (rng.standard_normal((4, 256)) + 1j * rng.standard_normal((4, 256)))
+        if i < numNoise:
+            data = noise
+        else:
+            step = stepRad if (i - numNoise) * 0.04 >= stepAtS else 0.0
+            phases = np.array([0.0, 1.0 + step, 3.0 + step, -2.0 - step])
+            data = np.exp(1j * phases)[:, None] * np.exp(2j * np.pi * 0.3 * n)[None, :] + noise
+        acq = ismrmrd.Acquisition.from_array(data.astype(np.complex64))
+        acq.scan_counter = i + 1
+        acq.acquisition_time_stamp = 16 * i            # 40 ms apart (2.5 ms ticks)
+        acqs.append(acq)
+    config = {'outputFolder': str(tmp_path), 'ptonePlot': 'false', 'ptoneTxDelayMs': '-1',
+              'skipFlags': 'ACQ_IS_NOISE_MEASUREMENT'}
+    config.update(params or {})
+    pilottone.process(acqs, {'parameters': config}, header)
+    npz = [f for f in os.listdir(tmp_path) if f.endswith('.npz')]
+    if not npz:
+        return None, None, None
+    d = np.load(tmp_path / npz[0])
+    return d, json.loads(str(d['settings'])), str(tmp_path / npz[0])
+
+def replay(d, settings, **params):
+    # The scores medianFilter gives on the saved results, line by line (as bulk_motion_eval.py does)
+    from ptone.bulk_motion import MedianFilter
+    m = MedianFilter(None, settings['refChanIdx'], minQuality=settings['ptoneQualityThreshold'], **params)
+    scores = [m.update(t, ph, amp, q) for t, ph, amp, q in
+              zip(d['time_ms'], d['relative_phase'], d['relative_amplitude'], d['quality'])]
+    return np.array([np.nan if s is None else s for s in scores])
+
+def test_bulk_motion_score_default(tmp_path):
+    d, settings, _ = run_moving_tone(tmp_path)
+    assert settings['bulkMotionMethod'] == 'medianFilter'
+    assert settings['medianFilterMinWindowS'] == 3.0 and settings['medianFilterMinLinesPerWindow'] == 5
+    assert settings['medianFilterMaxGapS'] is None and settings['bulkMotionError'] is None
+    score = d['bulk_motion_score']
+    assert score.shape == d['quality'].shape
+    # Windows of 3 s from the first tone line (line 11): 0-3, 3-6, 6-9, 9-12 s, then 12-14 s never completes.
+    # Scores for the 3-6, 6-9 and 9-12 s windows, on the lines that complete them
+    hasScore = np.flatnonzero(np.isfinite(score))
+    assert list(d['scan_counter'][hasScore]) == [11 + 75 * k for k in (2, 3, 4)]
+    assert settings['bulkMotionNumScores'] == 3
+    np.testing.assert_array_equal(score, replay(d, settings, minWindowS=3))
+    # The step at 7 s is in the 6-9 s window (more than half of it after the step): RMS over channels 1-3
+    # of 0.2 rad; the other windows don't change
+    assert score[hasScore[1]] == pytest.approx(0.2, abs=0.01)
+    assert score[hasScore[0]] < 0.01 and score[hasScore[2]] < 0.01
+
+def test_bulk_motion_parameters_from_config(tmp_path, caplog):
+    caplog.set_level('INFO')
+    d, settings, path = run_moving_tone(tmp_path, {'medianFilterMinWindowS': '2', 'medianFilterMinLinesPerWindow': '10',
+                                                   'medianFilterMaxGapS': '', 'ptoneQualityThreshold': '0.6'})
+    assert settings['medianFilterMinWindowS'] == 2.0 and settings['medianFilterMinLinesPerWindow'] == 10
+    assert settings['medianFilterMaxGapS'] is None
+    assert settings['bulkMotionNumScores'] == 5                     # 2 s windows: 0-2, ..., 10-12 s; 12-14 s incomplete
+    np.testing.assert_array_equal(d['bulk_motion_score'], replay(d, settings, minWindowS=2, minLinesPerWindow=10))
+    log = caplog.text
+    assert 'Bulk motion score: medianFilter, minWindowS 2.0, minLinesPerWindow 10, maxGapS None' in log
+    assert log.count('Bulk motion score 0.') == 5
+
+def test_bulk_motion_tr_from_header(tmp_path, caplog):
+    caplog.set_level('INFO')
+    header = SimpleNamespace(measurementInformation=SimpleNamespace(measurementID='1_2_3', protocolName='p'),
+                             sequenceParameters=SimpleNamespace(TR=[597.0]))
+    assert pilottone.get_tr_ms(header) == 597.0
+    assert pilottone.get_tr_ms(None) is None
+    assert pilottone.get_tr_ms(SimpleNamespace(sequenceParameters=SimpleNamespace(TR=[]))) is None
+    d, settings, path = run_moving_tone(tmp_path, header=header)
+    assert '(TR 597.0 ms' in caplog.text
+
+def test_bulk_motion_none(tmp_path):
+    d, settings, _ = run_moving_tone(tmp_path, {'bulkMotionMethod': 'none', 'medianFilterMinWindowS': '2'})
+    assert settings['bulkMotionMethod'] == 'none'
+    assert 'bulk_motion_score' not in d.files and 'medianFilterMinWindowS' not in settings
+
+@pytest.mark.parametrize('params, message', [
+    ({'bulkMotionMethod': 'nonsense'}, "Unknown bulkMotionMethod 'nonsense'"),
+    ({'medianFilterMinWindowS': '0'}, 'minWindowS must be positive'),
+])
+def test_bulk_motion_bad_settings(tmp_path, params, message):
+    # Like a bad flag name: the error is logged and nothing is analysed
+    d, _, _ = run_moving_tone(tmp_path, params)
+    assert d is None
+    log = [f for f in os.listdir(tmp_path) if f.endswith('.txt')][0]
+    assert message in open(tmp_path / log).read()
+
+def test_get_bulk_motion_params():
+    config = {'parameters': {'medianFilterMinWindowS': '2', 'medianFilterMaxGapS': ' ', 'otherMinWindowS': '9'}}
+    assert pilottone.get_bulk_motion_params(config, 'medianFilter') == {'minWindowS': '2'}
+    assert pilottone.get_bulk_motion_params(None, 'medianFilter') == {}
+    assert pilottone.get_bulk_motion_params(config, 'none') is None
+    with pytest.raises(ValueError, match='Unknown bulkMotionMethod'):
+        pilottone.get_bulk_motion_params(config, 'other')

@@ -60,6 +60,16 @@ def test_height_scales_with_channels(tmp_path):
     _, h4 = png_size(plot_npz(npz, pngPath=str(tmp_path / 'four.png')))
     assert h4 > 3 * h1
 
+def test_bulk_motion_score_row(tmp_path):
+    # A results file with a bulk motion score gets a row for it above the channels; all NaN (no scores yet) is fine
+    npz = make_npz(tmp_path / 'results.npz', numChan=2)
+    _, h = png_size(plot_npz(npz, pngPath=str(tmp_path / 'without.png')))
+    d = dict(np.load(npz))
+    for name, score in (('scores', np.where(np.arange(50) % 10 == 9, 0.01, np.nan)), ('nan', np.full(50, np.nan))):
+        np.savez(tmp_path / (name + '.npz'), **d, bulk_motion_score=score)
+        _, hScore = png_size(plot_npz(str(tmp_path / (name + '.npz'))))
+        assert hScore == pytest.approx(h * 10 / 7, rel=0.02)      # 3 + 3 + 1 in -> 3 + 3 + 3 + 1 in
+
 def test_cli_with_options(tmp_path):
     npz = make_npz(tmp_path / 'results.npz')
     out = tmp_path / 'x.png'
