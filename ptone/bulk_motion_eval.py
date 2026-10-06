@@ -3,11 +3,13 @@
 #
 # Each pilottone.py results file (.npz) with TCL data (added by ptone_plot.py --add-tcl or
 # ptone-offline-batch) is replayed line by line through the method, exactly as pilottone.py would run it
-# live, and each score is compared with how far the head moved between the same two windows the score
-# compared, according to the tracker: Jenkinson's RMS deviation (Jenkinson 1999, "Measuring transformation
-# error by RMS deviation"; the mean displacement over a sphere of radius RADIUS_MM) between the two windows'
-# median poses.  The tracker is shifted LAG_S earlier, since the tone changes ~0.4 s before the tracker
-# reports a movement (probably tracker latency).
+# live.  Any method in ptone/bulk_motion.py can be evaluated: each score says how much the head moved
+# between two spans of time, which the method reports with the score (its scoredWindow and comparedWindow,
+# see ptone/bulk_motion.py).  Each score is compared with how far the head moved between the same two
+# spans according to the tracker: Jenkinson's RMS deviation (Jenkinson 1999, "Measuring transformation
+# error by RMS deviation"; the RMS displacement over a sphere of radius RADIUS_MM) between the tracker's
+# median pose over each span.  The tracker is shifted LAG_S earlier, since the tone changes ~0.4 s before
+# the tracker reports a movement (probably tracker latency).
 #
 # The tracker (TracSuite) wasn't cross-calibrated to the scanner, so its poses (Tx, Ty, Tz in mm; Rx, Ry, Rz
 # in degrees) are in its own coordinates.  The sphere is centred at CENTRE_MM in those coordinates (default
@@ -21,7 +23,7 @@
 # (subject moved on instruction) or 'nm' (asked to keep still) from '--m-' / '--nm-' in the protocol name.
 #
 # Outputs, in the output directory:
-#   windows.csv   one row per score: the scan, the windows compared, the score, the tracker's change
+#   windows.csv   one row per score: the scan, the time spans compared, the score, the tracker's change
 #   summary.csv   per group (and parameter value, with --sweep): first-score time, scores per scan, still-head
 #                 level (still windows in 'nm' scans), AUC moved vs still (overall and by movement size),
 #                 false alarms and detection at reading-guide thresholds, and a leave-one-session-out check
@@ -34,8 +36,6 @@
 #   (or python ptone/bulk_motion_eval.py ...)
 # Python:
 #   from ptone.bulk_motion_eval import evaluate; windows = evaluate(['results/'], params={'minWindowS': 2})
-#
-# See ~/lcn/projects/ptone-fire/20261005-head-motion-metric-development.md for how these measures were chosen.
 
 import argparse
 import glob
@@ -145,11 +145,13 @@ def jenkinson_rms(translationA, rotationA, translationB, rotationB, radius=RADIU
 def score_scan(scan, method='medianFilter', params=None, lagS=LAG_S, minQuality=None, radius=RADIUS_MM,
                centre=CENTRE_MM):
     """
-    Replay a scan through the method; returns one dict per score: the windows compared, the score, and how
-    far the head moved between the same windows according to the tracker: Jenkinson's RMS deviation
-    (trackerRmsMm) between the windows' median poses, plus the change in translation (trackerMm) and the
-    largest change in rotation (trackerDeg), from lines with the tone (quality >= minQuality), with the
-    tracker shifted lagS earlier.  minQuality: default the file's ptoneQualityThreshold.
+    Replay a scan through the method; returns one dict per score: the two time spans the score compares (the
+    method's scoredWindow and comparedWindow, as columns windowStartS/EndS and comparedStartS/EndS), the
+    score, and how far the head moved between the same spans according to the tracker: Jenkinson's RMS
+    deviation (trackerRmsMm) between the tracker's median pose over each span, plus the change in
+    translation (trackerMm) and the largest change in rotation (trackerDeg), from lines with the tone
+    (quality >= minQuality), with the tracker shifted lagS earlier.  minQuality: default the file's
+    ptoneQualityThreshold.
     """
     minQuality = scan['qualityThreshold'] if minQuality is None else minQuality
     params = dict(params or {})
@@ -164,6 +166,9 @@ def score_scan(scan, method='medianFilter', params=None, lagS=LAG_S, minQuality=
         s = m.update(t[i], scan['relativePhase'][i], scan['relativeAmplitude'][i], q[i])
         if s is None:
             continue
+        if getattr(m, 'scoredWindow', None) is None or getattr(m, 'comparedWindow', None) is None:
+            raise ValueError("Bulk motion method %r didn't report the time spans its score compares "
+                             "(scoredWindow and comparedWindow)" % method)
         (a, b), (pa, pb) = m.scoredWindow, m.comparedWindow
         cur = good & (tTracker >= a) & (tTracker < b)
         prev = good & (tTracker >= pa) & (tTracker < pb)
@@ -320,16 +325,22 @@ def plot_scans(windows, plotDir):
         fig.savefig(os.path.join(plotDir, os.path.splitext(f)[0] + '--bulk-motion.png'), dpi=80)
 
 def format_summary(summary, label=''):
+    def pct(v, digits=0):
+        return 'n/a' if v is None or not np.isfinite(v) else '%.*f%%' % (digits, 100 * v)
     lines = []
     for r in summary:
         name = r['group'] + (' (context)' if r['context'] else '')
+        if np.isfinite(r['losoFaMedian']):
+            loso = ("FA median %s, worst %s, catches %s of movements >= %s mm"
+                    % (pct(r['losoFaMedian'], 1), pct(r['losoFaWorst'], 1),
+                       ' / '.join(pct(r.get('losoCaught_ge%g' % lo, np.nan)) for lo, _ in SIZE_BINS),
+                       ' / '.join('%g' % lo for lo, _ in SIZE_BINS)))
+        else:
+            loso = 'n/a (needs at least 2 sessions)'
         lines.append("%s%-16s scans %3d (%d without scores) | first score %5.1f s, %4.0f per scan | still: median %.4f, 99th pct %.4f rad"
-                     " | AUC moved %.2f (>=2 mm %.2f) | leave-one-session-out: FA median %.1f%%, worst %.1f%%, catches %s"
+                     " | AUC moved %.2f (>=2 mm %.2f) | leave-one-session-out: %s"
                      % (label, name, r['scans'], r['scansWithoutScores'], r['firstScoreS'], r['scoresPerScan'],
-                        r['stillMedian'], r['stillP99'], r['aucMoved'], r.get('auc_2_inf', np.nan),
-                        100 * r['losoFaMedian'], 100 * r['losoFaWorst'],
-                        ' / '.join('%.0f%%' % (100 * r.get('losoCaught_ge%g' % lo, np.nan)) for lo, _ in SIZE_BINS)
-                        + ' of movements >= ' + ' / '.join('%g' % lo for lo, _ in SIZE_BINS) + ' mm'))
+                        r['stillMedian'], r['stillP99'], r['aucMoved'], r.get('auc_2_inf', np.nan), loso))
     return '\n'.join(lines)
 
 def parse_values(text):

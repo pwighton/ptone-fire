@@ -10,6 +10,11 @@
 #   score = method.update(timeMs, relativePhase, relativeAmplitude, quality)    # once per analysed line
 # update() returns a new score when it has one, else None.  Every method receives every line, with relative
 # phase and amplitude for all channels and the line's quality, and decides itself which to use.
+#
+# A score says how much the head moved between two spans of time.  When update() returns a score, the
+# method's scoredWindow and comparedWindow attributes give those spans, as (start ms, end ms) in the lines'
+# timeMs: the span the score is for, and the earlier span it's compared with.  The evaluation
+# (ptone/bulk_motion_eval.py) compares each score with the tracker's movement between the same spans.
 
 import math
 
@@ -36,10 +41,10 @@ class MedianFilter:
     - One score per window with data, from the second such window on.  A movement raises the score of the
       window it ends in, and of the next one too if it happens in the second half of a window.
 
-    The score isn't scaled: in typical sessions a still head scores ~0.003 rad and large movements (>= 2 mm
-    or deg) mostly > ~0.015 rad (see the development notes).  Window length is a trade-off: shorter windows
-    give earlier and more frequent scores but noisier medians; on the test data FLASH and SWI did best with
-    3-5 s windows, the TSE equally well with 1-2 s.
+    The score isn't scaled.  On the test data (against TCL head tracking), in typical sessions a still head
+    scores ~0.003 rad and large movements (>= 2 mm) mostly > ~0.015 rad.  Window length is a trade-off:
+    shorter windows give earlier and more frequent scores but noisier medians; on the test data FLASH and
+    SWI did best with 3-5 s windows, the TSE equally well with 1-2 s.
 
     Parameters (those in PARAMETERS can be set in pilottone.json as medianFilter<Parameter>, e.g.
     medianFilterMinWindowS):

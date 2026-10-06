@@ -171,3 +171,16 @@ def test_command_line_no_tcl_data(tmp_path):
                              '--out-dir', str(tmp_path / 'out')], capture_output=True, text=True,
                             env=dict(os.environ, PYTHONPATH=os.pathsep.join(sys.path)), timeout=300)
     assert result.returncode == 1 and 'no scores' in result.stderr
+
+def test_method_must_report_spans(tmp_path, monkeypatch):
+    # A method whose scores don't say which time spans they compare can't be evaluated
+    from ptone import bulk_motion
+    class NoSpans:
+        def __init__(self, trMs, refChanIdx, minQuality=0.0):
+            pass
+        def update(self, timeMs, relativePhase, relativeAmplitude, quality):
+            return 0.0
+    monkeypatch.setitem(bulk_motion.METHODS, 'noSpans', NoSpans)
+    scan = ev.load_scan(make_result(tmp_path / 'a--MID00001-x.npz', durationS=1))
+    with pytest.raises(ValueError, match='scoredWindow and comparedWindow'):
+        ev.score_scan(scan, method='noSpans')
