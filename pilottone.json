@@ -16,6 +16,11 @@
         "medianFilterMinWindowS": "3",
         "medianFilterMinLinesPerWindow": "5",
         "medianFilterMaxGapS": "",
+        "protocolOverrides": [
+            {"match": "*t2_tse_tra*", "medianFilterMinWindowS": "2"},
+            {"match": "*t2_fl2d_tra*", "medianFilterMinWindowS": "3"},
+            {"match": "* TRA SWI*", "medianFilterMinWindowS": "4"}
+        ],
         "outputFolder": "/home/paul/lcn/projects/ptone-fire/ismrmrd-server-output",
         "outputFileStem": "pilottone",
         "ptonePlot": "true",

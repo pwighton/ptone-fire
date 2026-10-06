@@ -149,6 +149,26 @@ METHODS = {
     MedianFilter.name: MedianFilter,
 }
 
+def config_params(config, method):
+    """
+    The parameters for bulk motion method `method` from a pilottone.py JSON config ({'parameters': {...}}):
+    each parameter in the method's PARAMETERS, named <method><Parameter> in the config (e.g.
+    medianFilterMinWindowS for medianFilter's minWindowS).  Absent or empty ones are left out, so the method
+    uses its own default.  Values are passed as given (the method converts and checks them).  Returns None
+    for method 'none'; raises ValueError for an unknown method.
+    """
+    if method == 'none':
+        return None
+    if method not in METHODS:
+        raise ValueError("Unknown bulkMotionMethod %r (known: %s, or 'none')" % (method, ', '.join(sorted(METHODS))))
+    parameters = config.get('parameters', {}) if isinstance(config, dict) else {}
+    params = {}
+    for name in METHODS[method].PARAMETERS:
+        value = parameters.get(method + name[0].upper() + name[1:])
+        if value is not None and str(value).strip() != '':
+            params[name] = value
+    return params
+
 def create_bulk_motion(method, trMs, refChanIdx, params=None):
     """
     The bulk motion method called `method` (see METHODS), for a scan with sequence TR trMs (ms, or None)

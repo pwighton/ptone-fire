@@ -8,7 +8,8 @@ import subprocess
 import numpy as np
 import mrdhelper
 from ptone.estimate import analyze_line
-from ptone.bulk_motion import METHODS as bulkMotionMethods, create_bulk_motion
+from ptone.bulk_motion import METHODS as bulkMotionMethods, create_bulk_motion, config_params
+from ptone.protocol_overrides import apply_protocol_overrides
 from ptone.tx_frequency import check_band_position_and_side, ptone_tx_frequency
 from ptone.usrp_transmitter import USRPTransmitter
 
@@ -104,19 +105,9 @@ def get_flags_config_param(config, key, default):
 
 def get_bulk_motion_params(config, method):
     # The bulk motion method's parameters from the JSON config, each named <method><Parameter> (e.g.
-    # medianFilterMinWindowS for medianFilter's minWindowS), for every parameter in the method's PARAMETERS.
-    # Absent or empty parameters are left out, so the method uses its own default.  Values are passed as
-    # given (the method converts and checks them).  None for method 'none'; ValueError for an unknown method
-    if method == 'none':
-        return None
-    if method not in bulkMotionMethods:
-        raise ValueError("Unknown bulkMotionMethod %r (known: %s, or 'none')" % (method, ', '.join(sorted(bulkMotionMethods))))
-    params = {}
-    for name in bulkMotionMethods[method].PARAMETERS:
-        value = mrdhelper.get_json_config_param(config, method + name[0].upper() + name[1:], default=None)
-        if value is not None and str(value).strip() != '':
-            params[name] = value
-    return params
+    # medianFilterMinWindowS for medianFilter's minWindowS); see config_params() in ptone/bulk_motion.py.
+    # None for method 'none'; ValueError for an unknown method
+    return config_params(config, method)
 
 def get_tr_ms(mrdHeader):
     # The sequence TR (ms) from the MRD header, or None if it has none
@@ -131,13 +122,19 @@ def is_image_line(acq, skipFlags, dontSkipFlags):
         return True
     return not any(acq.is_flag_set(flag) for flag in skipFlags)
 
-def get_protocol_name(mrdHeader):
-    # Protocol name from the MRD header, with characters other than letters, digits, '.', '_' and '-'
-    # replaced by '_' so it's safe in a filename.  The server passes the header as text if it isn't valid MRD XML
+def get_header_protocol_name(mrdHeader):
+    # Protocol name from the MRD header as the scanner sent it (e.g. 'TRA SWI--nm-pt'), or None.  The server
+    # passes the header as text if it isn't valid MRD XML
     try:
         protocolName = mrdHeader.measurementInformation.protocolName
     except AttributeError:
         protocolName = None
+    return protocolName or None
+
+def get_protocol_name(mrdHeader):
+    # Protocol name from the MRD header, with characters other than letters, digits, '.', '_' and '-'
+    # replaced by '_' so it's safe in a filename
+    protocolName = get_header_protocol_name(mrdHeader)
     if not protocolName:
         return 'unknown'
     return re.sub(r'[^A-Za-z0-9._-]', '_', protocolName)
@@ -176,6 +173,19 @@ def get_git_commit():
 def process(connection, config, mrdHeader):
     results = []  # Per-line analysis results
 
+    # Settings for this scan's protocol: the first protocolOverrides rule whose pattern matches the protocol
+    # name replaces the settings it lists (see ptone/protocol_overrides.py).  Done before any setting is read,
+    # so a rule can set any of them.  configReceived is the config as received, saved with the results.
+    # Malformed rules are an error once logging to this scan's log file has started (see below)
+    configReceived = config
+    protocolOverrideError = None
+    try:
+        config, protocolOverride = apply_protocol_overrides(config, get_header_protocol_name(mrdHeader))
+    except ValueError as e:
+        protocolOverrideError = str(e)
+        protocolOverride = {'protocolName': get_header_protocol_name(mrdHeader), 'protocolOverrideIndex': None,
+                            'protocolOverrideMatch': None, 'protocolOverrideSettings': None}
+
     # Output file for the results
     outputFolder   = mrdhelper.get_json_config_param(config, 'outputFolder',   default=defaultOutputFolder,   type='str')
     outputFileStem = mrdhelper.get_json_config_param(config, 'outputFileStem', default=defaultOutputFileStem, type='str')
@@ -196,7 +206,13 @@ def process(connection, config, mrdHeader):
     logHandler.addFilter(lambda record: record.thread == thisThread)
     logging.getLogger().addHandler(logHandler)
 
-    logging.info("Config: \n%s", config)
+    logging.info("Config: \n%s", configReceived)
+    if protocolOverride['protocolOverrideMatch'] is not None:
+        logging.info("Protocol '%s' matches protocolOverrides rule %d ('%s'), which sets: %s", protocolOverride['protocolName'],
+                     protocolOverride['protocolOverrideIndex'], protocolOverride['protocolOverrideMatch'],
+                     ', '.join('%s = %s' % kv for kv in protocolOverride['protocolOverrideSettings'].items()))
+    elif protocolOverrideError is None:
+        logging.info("Protocol '%s' matches no protocolOverrides rule", protocolOverride['protocolName'])
     logging.info("mrdHeader: \n%s", mrdHeader)
     logging.info("Results will be saved to %s", outputFilePath)
     logging.info("Log will be saved to %s", logFilePath)
@@ -247,8 +263,14 @@ def process(connection, config, mrdHeader):
         'ptoneQualityThreshold':    ptoneQualityThreshold,
         'phaseMidpointScanCounter': None,   # Line the phase range midpoint was set from (scan_counter)
     }
+    # The protocol name and the protocolOverrides rule used (index, pattern and the settings it set; None if none)
+    settings.update(protocolOverride)
+
 
     try:
+        if protocolOverrideError is not None:
+            raise ValueError(protocolOverrideError)
+
         # Lines to analyze, based on their ISMRMRD flags (see defaultSkipFlags and defaultDontSkipFlags)
         skipFlags, skipFlagNames = get_flags_config_param(config, 'skipFlags', defaultSkipFlags)
         dontSkipFlags, dontSkipFlagNames = get_flags_config_param(config, 'dontSkipFlags', defaultDontSkipFlags)
@@ -432,7 +454,7 @@ def process(connection, config, mrdHeader):
 
         if numChanMismatch > 0:
             logging.warning("Skipped %d lines with a mismatched channel count", numChanMismatch)
-        npzPath = save_results(results, outputFilePath, timestamp, config, settings, mrdHeader, lastScanCounter)
+        npzPath = save_results(results, outputFilePath, timestamp, configReceived, settings, mrdHeader, lastScanCounter)
         connection.send_close()
 
         plot = ptonePlot and (npzPath is not None)

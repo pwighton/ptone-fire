@@ -18,6 +18,11 @@
 # displacement from the reference pose at the start of tracking, so its change between two windows can
 # understate a movement, and its exact definition couldn't be confirmed from the data.
 #
+# Method parameters: the method's defaults, or with --config a pilottone.py JSON config (e.g. pilottone.json):
+# each scan gets the method's parameters from it (<method><Parameter> settings, e.g. medianFilterMinWindowS)
+# after applying its protocolOverrides rules to the scan's protocol name, exactly as pilottone.py does
+# (ptone/protocol_overrides.py).  --param and --sweep values apply on top, to every scan.
+#
 # Results are grouped by sequence (from the protocol name: TSE, FLASH, SWI, MPRAGE, else the protocol
 # name).  Context groups (default MPRAGE) are reported but left out of pooled results.  Scans are 'm'
 # (subject moved on instruction) or 'nm' (asked to keep still) from '--m-' / '--nm-' in the protocol name.
@@ -31,14 +36,15 @@
 #   plots/        with --plots: per scan, the score and the tracker's change over time
 #
 # Command line:
-#   ptone-bulk-motion-eval <results dir or .npz> ... --out-dir eval [--param minWindowS=2] [--sweep minWindowS=1,2,3,5]
-#                          [--exclude-sessions ptoneH20260429] [--plots]
+#   ptone-bulk-motion-eval <results dir or .npz> ... --out-dir eval [--config pilottone.json] [--param minWindowS=2]
+#                          [--sweep minWindowS=1,2,3,5] [--exclude-sessions ptoneH20260429] [--plots]
 #   (or python ptone/bulk_motion_eval.py ...)
 # Python:
 #   from ptone.bulk_motion_eval import evaluate; windows = evaluate(['results/'], params={'minWindowS': 2})
 
 import argparse
 import glob
+import html
 import json
 import os
 import re
@@ -47,10 +53,11 @@ import sys
 import numpy as np
 
 try:
-    from ptone.bulk_motion import create_bulk_motion
+    from ptone.bulk_motion import create_bulk_motion, config_params
 except ImportError:                 # Run as a script from ptone/
     sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-    from ptone.bulk_motion import create_bulk_motion
+    from ptone.bulk_motion import create_bulk_motion, config_params
+from ptone.protocol_overrides import apply_protocol_overrides
 
 LAG_S = 0.4                         # Tracker shift: the tone changes ~0.4 s before the tracker reports a movement
 RADIUS_MM = 60.0                    # Jenkinson's RMS deviation: sphere radius (mm), about the size of a head
@@ -78,7 +85,7 @@ def find_results(paths):
 def protocol_name(d):
     # The protocol name from the saved MRD header, or '' if it can't be read
     m = re.search(r'<protocolName>(.*?)</protocolName>', str(d['mrd_header'])) if 'mrd_header' in d.files else None
-    return m.group(1) if m else ''
+    return html.unescape(m.group(1)) if m else ''
 
 def sequence_group(protocol):
     """The sequence group for a protocol name (see GROUP_PATTERNS), else the protocol without its motion suffix."""
@@ -188,26 +195,39 @@ def score_scan(scan, method='medianFilter', params=None, lagS=LAG_S, minQuality=
     return rows
 
 def evaluate(paths, method='medianFilter', params=None, lagS=LAG_S, minQuality=None, moved=MOVED, still=STILL,
-             excludeSessions=(), radius=RADIUS_MM, centre=CENTRE_MM):
+             excludeSessions=(), radius=RADIUS_MM, centre=CENTRE_MM, config=None):
     """
     Score every results file with TCL data under paths, except those from sessions in excludeSessions
     (session = the start of the filename, e.g. ptoneH20260429).  Returns (windows, scans): one dict per score,
     with 'size' (the RMS deviation, mm), 'moved' (size >= moved) and 'still' (size < still) added; and one
-    dict per scan with its first-score time and number of scores.
+    dict per scan with its first-score time and number of scores.  Both include the protocolOverrides rule
+    used ('protocolOverride', the pattern, '' if none) and the method parameters used ('scanParams').
+
+    config: a pilottone.py JSON config ({'parameters': {...}}), or None.  If given, each scan's method
+    parameters come from it, after applying its protocolOverrides rules to the scan's protocol name; params
+    apply on top.
     """
     windows, scans = [], []
     for path in find_results(paths):
         scan = load_scan(path)
         if scan is None or scan['session'] in excludeSessions:
             continue
-        rows = score_scan(scan, method, params, lagS, minQuality, radius, centre)
+        scanParams, override = dict(params or {}), None
+        if config is not None:
+            scanConfig, applied = apply_protocol_overrides(config, scan['protocol'])
+            scanParams = dict(config_params(scanConfig, method) or {}, **scanParams)
+            override = applied['protocolOverrideMatch']
+        rows = score_scan(scan, method, scanParams, lagS, minQuality, radius, centre)
         for r in rows:
+            r['protocolOverride'] = override or ''
+            r['scanParams'] = json.dumps(scanParams, sort_keys=True)
             r['size'] = r['trackerRmsMm']
             r['moved'] = bool(r['size'] >= moved)
             r['still'] = bool(r['size'] < still)
         windows += rows
         scans.append(dict(session=scan['session'], mid=scan['mid'], group=scan['group'], kind=scan['kind'],
-                          firstScoreS=rows[0]['windowEndS'] if rows else np.nan, numScores=len(rows)))
+                          firstScoreS=rows[0]['windowEndS'] if rows else np.nan, numScores=len(rows),
+                          protocolOverride=override or '', scanParams=json.dumps(scanParams, sort_keys=True)))
     return windows, scans
 
 # ----- Summaries ---------------------------------------------------------------------------------
@@ -355,6 +375,9 @@ def main(argv=None):
     parser.add_argument('inputs', nargs='+', help='Results files (.npz) or directories (searched recursively)')
     parser.add_argument('--out-dir', required=True, help='Directory for windows.csv, summary.csv, sessions.csv and plots')
     parser.add_argument('--method', default='medianFilter', help='Bulk motion method (default: medianFilter)')
+    parser.add_argument('--config', default=None, metavar='JSON',
+                        help="pilottone.py config (e.g. pilottone.json): each scan's method parameters from it, after its "
+                             "protocolOverrides rules (default: the method's defaults)")
     parser.add_argument('--param', type=parse_values, action='append', default=[], metavar='NAME=VALUE',
                         help='Method parameter, e.g. minWindowS=2 (repeatable)')
     parser.add_argument('--sweep', type=parse_values, default=None, metavar='NAME=V1,V2,...',
@@ -376,6 +399,10 @@ def main(argv=None):
     parser.add_argument('--plots', action='store_true', help='Plot each scan (score and tracker change)')
     args = parser.parse_args(argv)
 
+    config = None
+    if args.config is not None:
+        with open(args.config) as f:
+            config = json.load(f)
     params = dict(args.param)
     runs = [(None, params)]
     if args.sweep:
@@ -386,7 +413,7 @@ def main(argv=None):
     allWindows, allSummary, allSessions = [], [], []
     for label, p in runs:
         windows, scans = evaluate(args.inputs, args.method, p, args.lag, args.min_quality, args.moved, args.still,
-                                  args.exclude_sessions, args.radius, args.centre)
+                                  args.exclude_sessions, args.radius, args.centre, config)
         if not windows:
             print("bulk_motion_eval: no scores (no results with TCL data under %s?)" % ', '.join(args.inputs), file=sys.stderr)
             return 1

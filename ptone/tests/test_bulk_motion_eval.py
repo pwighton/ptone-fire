@@ -184,3 +184,37 @@ def test_method_must_report_spans(tmp_path, monkeypatch):
     scan = ev.load_scan(make_result(tmp_path / 'a--MID00001-x.npz', durationS=1))
     with pytest.raises(ValueError, match='scoredWindow and comparedWindow'):
         ev.score_scan(scan, method='noSpans')
+
+# ----- Settings by protocol name (--config) ------------------------------------------------------
+
+def test_evaluate_with_config(tmp_path):
+    # Each scan's parameters from the config's protocolOverrides rules, as pilottone.py would use them
+    make_result(tmp_path / 's1--MID00001-a.npz', protocol='t2_tse_tra_dark-fluid--nm-pt')
+    make_result(tmp_path / 's1--MID00002-b.npz', protocol='t2_fl2d_tra_hemo--nm-pt')
+    config = {'parameters': {'medianFilterMinWindowS': '3',
+                             'protocolOverrides': [{'match': '*TSE*', 'medianFilterMinWindowS': '2'}]}}
+    windows, scans = ev.evaluate([str(tmp_path)], config=config)
+    byMid = {s['mid']: s for s in scans}
+    assert byMid[1]['protocolOverride'] == '*TSE*' and json.loads(byMid[1]['scanParams']) == {'minWindowS': '2'}
+    assert byMid[2]['protocolOverride'] == '' and json.loads(byMid[2]['scanParams']) == {'minWindowS': '3'}
+    # 60 s of lines: 2 s windows give 28 scores (29 complete windows), 3 s windows 18
+    assert byMid[1]['numScores'] == 28 and byMid[2]['numScores'] == 18
+    assert all(w['protocolOverride'] == '*TSE*' for w in windows if w['mid'] == 1)
+    # --param applies on top, to every scan
+    windows, scans = ev.evaluate([str(tmp_path)], params={'minWindowS': '5'}, config=config)
+    assert all(json.loads(s['scanParams']) == {'minWindowS': '5'} for s in scans)
+
+def test_command_line_config(tmp_path):
+    pytest.importorskip('pandas')
+    data = tmp_path / 'data'; data.mkdir()
+    make_result(data / 's1--MID00001-a.npz', protocol='TRA_SWI--m-pt', moveAtS=31.0)
+    with open(tmp_path / 'config.json', 'w') as f:
+        json.dump({'parameters': {'protocolOverrides': [{'match': '*swi*', 'medianFilterMinWindowS': '5'}]}}, f)
+    out = tmp_path / 'out'
+    result = subprocess.run([sys.executable, os.path.join(repoDir, 'ptone', 'bulk_motion_eval.py'), str(data),
+                             '--out-dir', str(out), '--config', str(tmp_path / 'config.json')],
+                            capture_output=True, text=True, env=dict(os.environ, PYTHONPATH=os.pathsep.join(sys.path)), timeout=300)
+    assert result.returncode == 0, result.stderr
+    import pandas
+    windows = pandas.read_csv(out / 'windows.csv')
+    assert set(windows['protocolOverride']) == {'*swi*'} and set(windows['scanParams']) == {'{"minWindowS": "5"}'}

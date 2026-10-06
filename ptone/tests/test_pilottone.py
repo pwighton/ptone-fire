@@ -252,3 +252,44 @@ def test_get_bulk_motion_params():
     assert pilottone.get_bulk_motion_params(config, 'none') is None
     with pytest.raises(ValueError, match='Unknown bulkMotionMethod'):
         pilottone.get_bulk_motion_params(config, 'other')
+
+# ----- Settings by protocol name (protocolOverrides) ---------------------------------------------
+
+def header_with_protocol(protocolName):
+    return SimpleNamespace(measurementInformation=SimpleNamespace(measurementID='1_2_7', protocolName=protocolName))
+
+OVERRIDES = [{'match': '*tse*', 'medianFilterMinWindowS': '2'}, {'match': '*swi*', 'medianFilterMinWindowS': '5'}]
+
+def test_protocol_override_applied(tmp_path, caplog):
+    caplog.set_level('INFO')
+    d, settings, _ = run_moving_tone(tmp_path, {'protocolOverrides': OVERRIDES}, header=header_with_protocol('t2_TSE_tra--m-pt'))
+    assert settings['medianFilterMinWindowS'] == 2.0
+    assert settings['bulkMotionNumScores'] == 5                     # 2 s windows, as in test_bulk_motion_parameters_from_config
+    assert settings['protocolName'] == 't2_TSE_tra--m-pt'
+    assert settings['protocolOverrideIndex'] == 0 and settings['protocolOverrideMatch'] == '*tse*'
+    assert settings['protocolOverrideSettings'] == {'medianFilterMinWindowS': '2'}
+    import json
+    assert json.loads(str(d['config']))['parameters']['protocolOverrides'] == OVERRIDES   # Saved as received
+    assert "Protocol 't2_TSE_tra--m-pt' matches protocolOverrides rule 0 ('*tse*'), which sets: medianFilterMinWindowS = 2" in caplog.text
+
+def test_protocol_override_no_match(tmp_path, caplog):
+    caplog.set_level('INFO')
+    d, settings, _ = run_moving_tone(tmp_path, {'protocolOverrides': OVERRIDES, 'medianFilterMinWindowS': '4'},
+                                     header=header_with_protocol('t2_fl2d_tra_hemo--nm-pt'))
+    assert settings['medianFilterMinWindowS'] == 4.0
+    assert settings['protocolOverrideMatch'] is None and settings['protocolOverrideSettings'] is None
+    assert "Protocol 't2_fl2d_tra_hemo--nm-pt' matches no protocolOverrides rule" in caplog.text
+
+def test_protocol_override_any_setting(tmp_path):
+    # A rule can set any setting, e.g. turn the bulk motion score off
+    d, settings, _ = run_moving_tone(tmp_path, {'protocolOverrides': [{'match': '*mprage*', 'bulkMotionMethod': 'none'}]},
+                                     header=header_with_protocol('t1_mprage--nm-pt'))
+    assert settings['bulkMotionMethod'] == 'none' and 'bulk_motion_score' not in d.files
+
+def test_protocol_override_malformed(tmp_path):
+    # Like a bad flag name: the error is logged and nothing is analysed
+    d, _, _ = run_moving_tone(tmp_path, {'protocolOverrides': [{'medianFilterMinWindowS': '2'}]},
+                              header=header_with_protocol('t2_tse'))
+    assert d is None
+    log = [f for f in os.listdir(tmp_path) if f.endswith('.txt')][0]
+    assert "'match' pattern" in open(tmp_path / log).read()
