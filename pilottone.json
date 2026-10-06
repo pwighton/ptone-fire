@@ -16,7 +16,7 @@
         "medianFilterMinWindowS": "3",
         "medianFilterMinLinesPerWindow": "5",
         "medianFilterMaxGapS": "",
-        "outputFolder": "/home/paul/lcn/projects/pt-fire/ismrmrd-server-output",
+        "outputFolder": "/home/paul/lcn/projects/ptone-fire/ismrmrd-server-output",
         "outputFileStem": "pilottone",
         "ptonePlot": "true",
         "skipFlags": [
