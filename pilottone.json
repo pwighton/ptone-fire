@@ -17,9 +17,9 @@
         "medianFilterMinLinesPerWindow": "5",
         "medianFilterMaxGapS": "",
         "protocolOverrides": [
-            {"matchProtocolName": "*t2_tse_tra*", "medianFilterWindowS": "2"},
-            {"matchProtocolName": "*t2_fl2d_tra*", "medianFilterWindowS": "3"},
-            {"matchProtocolName": "*TRA SWI*", "medianFilterWindowS": "5"}
+            {"matchProtocolName": "*t2_tse_tra*", "medianFilterWindowS": "2", "ptoneTxDB": "70"},
+            {"matchProtocolName": "*t2_fl2d_tra*", "medianFilterWindowS": "3", "ptoneTxDB": "70"},
+            {"matchProtocolName": "*TRA SWI*", "medianFilterWindowS": "5", "ptoneTxDB": "70"}
         ],
         "outputFolder": "/home/paul/lcn/projects/ptone-fire/ismrmrd-server-output",
         "outputFileStem": "pilottone",
