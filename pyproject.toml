@@ -1,4 +1,5 @@
-# Installs the 'mrd-client', 'mrd-server', 'ptone-offline-batch' and 'ptone-plot' commands (see mrd_commands.py).
+# Installs the 'mrd-client', 'mrd-server', 'ptone-offline-batch', 'ptone-plot' and 'ptone-bulk-motion-eval' commands
+# (see mrd_commands.py).
 # Dependencies come from the conda environment (environment.yml), which installs this repository in
 # editable mode ('-e .'), so the commands always run the code in this checkout.
 [build-system]
@@ -15,6 +16,7 @@ mrd-client = "mrd_commands:client"
 mrd-server = "mrd_commands:server"
 ptone-offline-batch = "mrd_commands:ptone_offline_batch"
 ptone-plot = "mrd_commands:ptone_plot"
+ptone-bulk-motion-eval = "mrd_commands:ptone_bulk_motion_eval"
 
 [tool.setuptools]
 py-modules = ["mrd_commands"]
