@@ -1,7 +1,7 @@
 # Tests for pilottone.py's output naming
 #
-# The real-header tests look for data in $PTONE_TEST_DATA (default ../pilot-tone-test-data) and
-# ../20260930-bay1-tests relative to the repository root, and are skipped if not found.
+# The real-header tests look for data in $PTONE_TEST_DATA (default ../pilot-tone-test-data relative to the
+# repository root), including its 20260930-bay1-tests folder, and are skipped if not found.
 
 import os
 import sys
@@ -36,7 +36,7 @@ def test_get_mid_without_header(header):
 
 @pytest.mark.parametrize('path, mid', [
     (os.path.join(dataDir, 'ptoneH20260429--meas_MID00284_FID14131_t2_tse_tra_dark_fluid__m_pt.h5'), 284),
-    (os.path.join(repoDir, '..', '20260930-bay1-tests', 'bay1-test1.h5'), 1104),   # Header from the FIRE stream
+    (os.path.join(dataDir, '20260930-bay1-tests', 'bay1-test1.h5'), 1104),   # Header from the FIRE stream
 ])
 def test_get_mid_real_headers(path, mid):
     if not os.path.exists(path):
