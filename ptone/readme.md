@@ -66,8 +66,9 @@ python main.py -s -S /path/to/saved_data
 
 You can convert FIRE's raw MRD stream to ismrmd h5:
 ```
-python stream2h5.py ../20260930-bay1-tests/bay1-test1.dat ../20260930-bay1-tests/bay1-test1.h5
+mrd-stream2h5 fire-raw-mrd.dat fire-raw-mrd.h5
 ```
+(or `python stream2h5.py ...` from the repository)
 
 You can convert a meas.dat from twix to h5 with
 ```
