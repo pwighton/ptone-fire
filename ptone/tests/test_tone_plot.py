@@ -12,7 +12,7 @@ import numpy as np
 import pytest
 
 from ptone.tone_plot import plot_lines, read_lines
-from ptone.tests.test_tone_removal import make_line
+from ptone.tests.test_tone_estimation import make_line
 
 repoDir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 dataDir = os.environ.get('PTONE_TEST_DATA', os.path.join(repoDir, '..', 'pilot-tone-test-data'))

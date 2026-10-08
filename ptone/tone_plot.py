@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
-# Plot k-space lines with the pilot tone fitted and subtracted (ptone/tone_removal.py), as a PNG.
+# Plot k-space lines with the pilot tone fitted (ptone/tone_estimation.py) and subtracted (ptone/tone_removal.py),
+# as a PNG.
 #
 # For each chosen line and channel, one row of panels:
 #   - k-space: the line's samples (real part, imaginary part or magnitude), the fitted tone, and the line
@@ -31,10 +32,12 @@ from matplotlib.figure import Figure
 from matplotlib.backends.backend_agg import FigureCanvasAgg
 
 try:
-    from ptone.tone_removal import fit_tone, subtract_tone, tone_model, band_power_reduction_db
+    from ptone.tone_estimation import fit_tone, tone_model
+    from ptone.tone_removal import subtract_tone, band_power_reduction_db
 except ImportError:                 # Run as a script from ptone/
     sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-    from ptone.tone_removal import fit_tone, subtract_tone, tone_model, band_power_reduction_db
+    from ptone.tone_estimation import fit_tone, tone_model
+    from ptone.tone_removal import subtract_tone, band_power_reduction_db
 
 # ----- Reading lines ----------------------------------------------------------------------------
 
