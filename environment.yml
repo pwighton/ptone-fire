@@ -23,4 +23,5 @@ dependencies:
     - pydicom==3.0.2
     - pandas==2.3.3         # ptone/tcl.py (TCL head motion); newest for python 3.10
     - pytest==9.1.1         # tests in ptone/tests
+    - twixtools==0.24       # ptone/tone_plot.py (Siemens raw .dat files); brings scipy and tqdm
     - -e .                  # this repository: the mrd-client and mrd-server commands (pyproject.toml)

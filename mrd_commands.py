@@ -1,8 +1,8 @@
 # Command-line entry points, so the client and server can be run from any directory as 'mrd-client' and
 # 'mrd-server', stream2h5.py (raw MRD stream to HDF5) as 'mrd-stream2h5', and the pilot tone scripts as
-# 'ptone-offline-batch', 'ptone-plot' and 'ptone-bulk-motion-eval' (see pyproject.toml).  Each runs the script exactly as 'python client.py' or
-# 'python main.py' would: as __main__, with this repository first on the module search path, so the server
-# can still load configs such as pilottone.py.
+# 'ptone-offline-batch', 'ptone-plot', 'ptone-bulk-motion-eval' and 'ptone-tone-plot' (see pyproject.toml).
+# Each runs the script exactly as 'python client.py' or 'python main.py' would: as __main__, with this
+# repository first on the module search path, so the server can still load configs such as pilottone.py.
 #
 # mrd-client looks for <config>.json in the current directory, then in this repository (see client.py).
 
@@ -34,3 +34,6 @@ def ptone_plot():
 
 def ptone_bulk_motion_eval():
     run_script(os.path.join('ptone', 'bulk_motion_eval.py'))
+
+def ptone_tone_plot():
+    run_script(os.path.join('ptone', 'tone_plot.py'))
