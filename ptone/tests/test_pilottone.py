@@ -331,3 +331,55 @@ def test_header_sequence_type():
     assert pilottone.get_header_sequence_type(header_with_protocol('x')) is None
     assert pilottone.get_header_sequence_type(None) is None
     assert pilottone.get_header_sequence_type('not valid MRD XML') is None
+
+# ----- The server's own config when none is sent -------------------------------------------------
+
+def test_fallback_config_when_none_is_sent(tmp_path, monkeypatch):
+    # The scanner sends no JSON (the server passes just the config name): the server's own file is used
+    import json
+    path = tmp_path / 'server.json'
+    path.write_text(json.dumps({'version': '0.0.1', 'parameters': {'outputFolder': str(tmp_path / 'out'), 'ptonePlot': 'false',
+                                                                   'outputFileStem': 'fromfile', 'medianFilterWindowS': '2'}}))
+    monkeypatch.setenv(pilottone.fallbackConfigEnvVar, str(path))
+    import ismrmrd
+    acqs = FakeConnection()
+    for i in range(5):
+        data = np.exp(2j * np.pi * 0.3 * np.arange(256))[None, :].repeat(4, 0) + 0.01 * np.random.randn(4, 256)
+        acq = ismrmrd.Acquisition.from_array(data.astype(np.complex64))
+        acq.scan_counter = i + 1
+        acq.acquisition_time_stamp = 4 * i
+        acqs.append(acq)
+    pilottone.process(acqs, 'pilottone', None)
+    npz = [f for f in os.listdir(tmp_path / 'out') if f.endswith('.npz')]
+    assert len(npz) == 1 and npz[0].startswith('fromfile--')
+    d = np.load(tmp_path / 'out' / npz[0])
+    settings = json.loads(str(d['settings']))
+    assert settings['configSource'] == str(path) and settings['medianFilterWindowS'] == 2.0
+    assert json.loads(str(d['config']))['parameters']['outputFileStem'] == 'fromfile'
+
+def test_load_fallback_config(tmp_path, monkeypatch):
+    monkeypatch.delenv(pilottone.fallbackConfigEnvVar, raising=False)
+    # A config sent with the scan is used as it is
+    sent = {'parameters': {'refChanIdx': '3'}}
+    assert pilottone.load_fallback_config(sent) == (sent, 'sent with the scan', None)
+    # None sent: <config name>.json next to pilottone.py, as mrd-client looks for it
+    for name in ('pilottone', 'pilottone_offline'):
+        config, source, message = pilottone.load_fallback_config(name)
+        assert source == os.path.join(repoDir, name + '.json')
+        assert config['parameters']['refChanIdx'] == '0' and "using the server's own config" in message
+    # The environment variable names another file
+    path = tmp_path / 'x.json'
+    path.write_text('{"parameters": {"refChanIdx": "5"}}')
+    monkeypatch.setenv(pilottone.fallbackConfigEnvVar, str(path))
+    assert pilottone.load_fallback_config('pilottone')[:2] == ({'parameters': {'refChanIdx': '5'}}, str(path))
+
+@pytest.mark.parametrize('contents, reason', [(None, 'No such file'), ('{"parameters": ', 'Expecting'), ('[1, 2]', "no 'parameters'")])
+def test_load_fallback_config_problems(tmp_path, monkeypatch, contents, reason):
+    # A missing or broken file: the built-in defaults, with a message saying why
+    path = tmp_path / 'server.json'
+    if contents is not None:
+        path.write_text(contents)
+    monkeypatch.setenv(pilottone.fallbackConfigEnvVar, str(path))
+    config, source, message = pilottone.load_fallback_config('pilottone')
+    assert config == 'pilottone' and source == 'built-in defaults'
+    assert reason in message and 'using the built-in defaults' in message

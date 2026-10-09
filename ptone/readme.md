@@ -45,7 +45,14 @@ uhd_find_devices                # check the USRP is found
 ```
 
 Edit `pilottone.json`
-- TODO
+- These are the settings for live scans. Where the server gets them from:
+  - If the scanner sends a JSON config with the scan (it does if it has `pilottone.json` in its
+    `fire\config` folder, or one named in `<JsonConfig>`), that is used.
+  - If it sends none, the server uses its own `pilottone.json` (the one in this repository), or the file
+    named by the environment variable `PTONE_FALLBACK_CONFIG`.
+  - Offline, `mrd-client` sends `<config name>.json` (e.g. `pilottone_offline.json`).
+  - Each scan's log starts with `Config (<where it came from>)`, and its saved `settings` record it as
+    `configSource`.
 
 ## Usage
 

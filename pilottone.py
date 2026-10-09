@@ -106,6 +106,34 @@ def get_flags_config_param(config, key, default):
 
     return [getattr(ismrmrd, name) for name in names], names
 
+# The server's own config, used when no JSON config is sent with a scan (see load_fallback_config()):
+# <config name>.json next to this file (e.g. pilottone.json), or the file named by this environment variable
+fallbackConfigEnvVar = 'PTONE_FALLBACK_CONFIG'
+
+def load_fallback_config(config):
+    """
+    The config to use, and where it came from: (config, source, message).
+
+    The server passes the JSON config sent with the scan (a dict).  If none was sent, it passes just the config
+    name (e.g. 'pilottone'), and then the server's own config file is used instead: the file named by the
+    environment variable PTONE_FALLBACK_CONFIG if set, else <config name>.json next to this file (as mrd-client
+    looks for it).  source: 'sent with the scan', the file's path, or 'built-in defaults' (no file, or it
+    couldn't be read; message then says why, to be logged as an error).  message: None, or text to log.
+    """
+    if isinstance(config, dict):
+        return config, 'sent with the scan', None
+    name = config if isinstance(config, str) and re.fullmatch(r'[A-Za-z0-9_.-]+', config or '') else 'pilottone'
+    path = os.environ.get(fallbackConfigEnvVar) or os.path.join(os.path.dirname(os.path.abspath(__file__)), name + '.json')
+    try:
+        with open(path) as f:
+            fileConfig = json.load(f)
+        if not isinstance(fileConfig, dict) or not isinstance(fileConfig.get('parameters'), dict):
+            raise ValueError("no 'parameters' object")
+    except (OSError, ValueError) as e:
+        return config, 'built-in defaults', ("No JSON config was sent with the scan, and the server's own config %s "
+                                             "couldn't be used (%s): using the built-in defaults" % (path, e))
+    return fileConfig, path, "No JSON config was sent with the scan: using the server's own config %s" % path
+
 def get_bulk_motion_params(config, method):
     # The bulk motion method's parameters from the JSON config, each named <method><Parameter> (e.g.
     # medianFilterWindowS for medianFilter's windowS); see config_params() in ptone/bulk_motion.py.
@@ -184,9 +212,14 @@ def get_git_commit():
 def process(connection, config, mrdHeader):
     results = []  # Per-line analysis results
 
+    # If no JSON config was sent (the scanner sends one only if it has <config name>.json in its fire\config
+    # folder), use the server's own: see load_fallback_config().  Problems with it are logged once logging to
+    # this scan's log file has started (see below), and the built-in defaults are used
+    config, configSource, configMessage = load_fallback_config(config)
+
     # Settings for this scan: every protocolOverrides rule matching the scan's protocol name and/or sequence
     # type replaces the settings it lists, in list order (see ptone/protocol_overrides.py).  Done before any
-    # setting is read, so a rule can set any of them.  configReceived is the config as received, saved with
+    # setting is read, so a rule can set any of them.  configReceived is the config before the rules, saved with
     # the results.  Malformed rules are an error once logging to this scan's log file has started (see below)
     configReceived = config
     protocolOverrideError = None
@@ -218,7 +251,9 @@ def process(connection, config, mrdHeader):
     logHandler.addFilter(lambda record: record.thread == thisThread)
     logging.getLogger().addHandler(logHandler)
 
-    logging.info("Config: \n%s", configReceived)
+    if configMessage is not None:
+        (logging.info if configSource != 'built-in defaults' else logging.error)("%s", configMessage)
+    logging.info("Config (%s): \n%s", configSource, configReceived)
     if protocolOverrideError is None:
         scanLabel = "Protocol '%s', sequence type '%s'" % (protocolOverride['protocolName'], protocolOverride['sequenceType'])
         if protocolOverride['protocolOverrideIndices']:
@@ -272,6 +307,7 @@ def process(connection, config, mrdHeader):
     # Settings actually used (config values with defaults filled in), saved with the results
     settings = {
         'gitCommit':      gitCommit,
+        'configSource':   configSource,     # Where the config came from (see load_fallback_config())
         'outputFolder':   outputFolder,
         'outputFileStem': outputFileStem,
         'ptoneTxDelayMs': ptoneTxDelayMs,
@@ -534,7 +570,8 @@ def save_results(results, filePath, timestamp, config, settings, mrdHeader, last
              relative_phase     = np.stack([r['relative_phase']     for r in results]),  # [lines, channels]
              **bulk_motion_arrays(results),
              timestamp    = np.array(timestamp),                               # Processing start, YYYYMMDD-HHMMSS-mmm
-             config       = np.array(json.dumps(config, indent=4)),            # Config as received, as JSON text
+             # Config used (as sent with the scan, or the server's own file; see settings configSource), as JSON text
+             config       = np.array(json.dumps(config, indent=4)),
              settings     = np.array(json.dumps(settings, indent=4)),          # Settings actually used, as JSON text
              mrd_header   = np.array(mrd_header_to_xml(mrdHeader)),            # MRD header, as XML text
              # Highest scan_counter of all lines received, analyzed or not (-1 if unknown)
