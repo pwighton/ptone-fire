@@ -73,10 +73,11 @@ def test_output_filename_without_mid(tmp_path):
 
 # ----- Negative ptoneTxDelayMs: analyse every eligible line ----------------------------------------
 
-def run_flagged(tmp_path, delayMs, numFlagged, numLines=6):
-    # Lines whose first numFlagged carry ACQ_IS_SURFACECOILCORRECTIONSCAN_DATA (as siemens_to_ismrmrd does for
-    # every MPRAGE line).  skipFlags doesn't skip that flag; ptoneTxFreqSkipFlags (default) does, so those lines
-    # can't start the transmitter.  Returns the scan_counters analysed (empty if no results were saved)
+def run_flagged(tmp_path, delayMs, numFlagged, numLines=6, flag='ACQ_IS_NAVIGATION_DATA', skipFlags='ACQ_IS_NOISE_MEASUREMENT'):
+    # Lines whose first numFlagged carry flag.  With the defaults: ACQ_IS_NAVIGATION_DATA, which skipFlags (here
+    # only the noise flag) doesn't skip but ptoneTxFreqSkipFlags (default) does, so those lines are analysed but
+    # can't start the transmitter.  skipFlags None: the default skipFlags.  Returns the scan_counters analysed
+    # (empty if no results were saved)
     import ismrmrd
     acqs = FakeConnection()
     for i in range(numLines):
@@ -85,10 +86,12 @@ def run_flagged(tmp_path, delayMs, numFlagged, numLines=6):
         acq.scan_counter = i + 1
         acq.acquisition_time_stamp = 4 * i
         if i < numFlagged:
-            acq.set_flag(ismrmrd.ACQ_IS_SURFACECOILCORRECTIONSCAN_DATA)
+            acq.set_flag(getattr(ismrmrd, flag))
         acqs.append(acq)
-    pilottone.process(acqs, {'parameters': {'outputFolder': str(tmp_path), 'ptonePlot': 'false', 'ptoneTxDelayMs': str(delayMs),
-                                            'skipFlags': 'ACQ_IS_NOISE_MEASUREMENT'}}, None)
+    params = {'outputFolder': str(tmp_path), 'ptonePlot': 'false', 'ptoneTxDelayMs': str(delayMs)}
+    if skipFlags is not None:
+        params['skipFlags'] = skipFlags
+    pilottone.process(acqs, {'parameters': params}, None)
     npz = [f for f in os.listdir(tmp_path) if f.endswith('.npz')]
     return list(np.load(tmp_path / npz[0])['scan_counter']) if npz else []
 
@@ -97,6 +100,27 @@ def test_all_lines_flagged_needs_negative_delay(tmp_path):
     assert run_flagged(tmp_path / 'zero', 0, numFlagged=6) == []
     # ... and with a negative delay every eligible line is
     assert run_flagged(tmp_path / 'negative', -1, numFlagged=6) == [1, 2, 3, 4, 5, 6]
+
+def test_coil_correction_flag_doesnt_skip_lines(tmp_path):
+    # ACQ_IS_SURFACECOILCORRECTIONSCAN_DATA is the Siemens RAWDATACORRECTION flag, which the scanner sets on every
+    # line of e.g. SWI and MPRAGE scans: with the default flag lists those lines start the transmitter and are
+    # analysed
+    assert run_flagged(tmp_path, 0, numFlagged=6, flag='ACQ_IS_SURFACECOILCORRECTIONSCAN_DATA', skipFlags=None) == [1, 2, 3, 4, 5, 6]
+    assert 'ACQ_IS_SURFACECOILCORRECTIONSCAN_DATA' not in pilottone.defaultSkipFlags
+    assert 'ACQ_IS_SURFACECOILCORRECTIONSCAN_DATA' not in pilottone.defaultPtoneTxFreqSkipFlags
+
+def test_warning_when_transmitter_never_starts(tmp_path, caplog):
+    # Every line has a ptoneTxFreqSkipFlags flag: a warning, which says nothing was analysed if ptoneTxDelayMs >= 0
+    assert run_flagged(tmp_path / 'zero', 0, numFlagged=6) == []
+    assert "No line could set the pilot tone frequency or start the transmitter" in caplog.text
+    assert "no lines were analysed" in caplog.text
+    caplog.clear()
+    assert run_flagged(tmp_path / 'negative', -1, numFlagged=6) == [1, 2, 3, 4, 5, 6]
+    assert "No line could set the pilot tone frequency" in caplog.text and "no lines were analysed" not in caplog.text
+    caplog.clear()
+    # One line can start it: no warning
+    run_flagged(tmp_path / 'one', 0, numFlagged=5)
+    assert "No line could set the pilot tone frequency" not in caplog.text
 
 def test_negative_delay_includes_lines_before_transmitter_start(tmp_path):
     # The first 2 lines can't start the transmitter; line 3 does

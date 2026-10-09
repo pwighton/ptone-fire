@@ -63,9 +63,11 @@ defaultSkipFlags = [
     'ACQ_IS_NOISE_MEASUREMENT',               # NOISEADJSCAN
     # When using fast_phase_avg --use-nonimage-scans, ACQ_IS_PARALLEL_CALIBRATION are included
     #'ACQ_IS_PARALLEL_CALIBRATION',            # PATREFSCAN
-    # Not in twixtools_mdh.py.  fast_phase_avg.py skips the whole AdjCoilSens measurement instead
-    'ACQ_IS_SURFACECOILCORRECTIONSCAN_DATA',
     'ACQ_IS_NAVIGATION_DATA',
+    # Not ACQ_IS_SURFACECOILCORRECTIONSCAN_DATA: despite its name, it's the Siemens flag RAWDATACORRECTION
+    # (bit 10), which the scanner's FIRE stream and siemens_to_ismrmrd both set on every line of some
+    # sequences, imaging lines included (e.g. SWI and MPRAGE).  Skipping it skipped those scans entirely.
+    # (It's also set on the AdjCoilSens adjustment measurement, which isn't an imaging scan.)
 ]
 
 # Defaults for the dontSkipFlags
@@ -83,9 +85,10 @@ defaultPtoneTxFreqSkipFlags = [
     'ACQ_IS_NAVIGATION_DATA',
     'ACQ_IS_RTFEEDBACK_DATA',
     'ACQ_IS_HPFEEDBACK_DATA',
-    'ACQ_IS_SURFACECOILCORRECTIONSCAN_DATA',
     'ACQ_IS_PHASE_STABILIZATION',
     'ACQ_IS_PHASE_STABILIZATION_REFERENCE',
+    # Not ACQ_IS_SURFACECOILCORRECTIONSCAN_DATA, which is set on every line of e.g. SWI and MPRAGE scans (see
+    # defaultSkipFlags): with it, no line of those scans could start the transmitter
 ]
 
 def get_flags_config_param(config, key, default):
@@ -468,6 +471,12 @@ def process(connection, config, mrdHeader):
 
         if numChanMismatch > 0:
             logging.warning("Skipped %d lines with a mismatched channel count", numChanMismatch)
+        if txStartTimeMs is None and lastScanCounter is not None:
+            # Lines arrived, but none could set the pilot tone frequency and start the transmitter
+            logging.warning("No line could set the pilot tone frequency or start the transmitter: every line had one "
+                            "of the ptoneTxFreqSkipFlags (%s).  %s", ', '.join(ptoneTxFreqSkipFlagNames),
+                            "The transmitter wasn't started, and no lines were analysed (ptoneTxDelayMs >= 0 waits for it)"
+                            if ptoneTxDelayMs >= 0 else "The transmitter wasn't started")
         npzPath = save_results(results, outputFilePath, timestamp, configReceived, settings, mrdHeader, lastScanCounter)
         connection.send_close()
 
